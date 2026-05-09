@@ -54,6 +54,21 @@ public sealed class ParseTests
     }
 
     [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay", GameMode.Standard)]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay", GameMode.BrawlCommanders)]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay", GameMode.Standard)]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay", GameMode.Standard)]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay", GameMode.Standard)]
+    public async Task CanSetGameMode(string replayName, GameMode gameMode)
+    {
+        var replay = await GetReplay(replayName);
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.AreEqual(gameMode, dsReplay.GameMode);
+    }
+
+    [TestMethod]
     public async Task CanSetPlayerMetadata()
     {
         var replay = await GetReplay("testdata/Direct Strike (10060).SC2Replay");
@@ -106,6 +121,47 @@ public sealed class ParseTests
         Assert.AreEqual(TimeSpan.Zero, dsReplay.Duration);
         Assert.AreEqual(PlayerResult.Win, dsReplay.Players[0].Result);
         Assert.AreEqual(Race.None, dsReplay.Players[0].SelectedRace);
+    }
+
+    [TestMethod]
+    public async Task CanParseReplayWithoutTrackerEvents()
+    {
+        ReplayDecoderOptions options = new()
+        {
+            Details = true,
+            Initdata = true,
+            Metadata = true,
+            GameEvents = false,
+            MessageEvents = false,
+            TrackerEvents = false,
+            AttributeEvents = false,
+        };
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10060).SC2Replay", options);
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.AreEqual(GameMode.None, dsReplay.GameMode);
+    }
+
+    [TestMethod]
+    public void CanClassifyGameModeFallbacks()
+    {
+        Assert.AreEqual(GameMode.Tutorial, InvokeGetGameMode([], 1));
+        Assert.AreEqual(GameMode.None, InvokeGetGameMode([], 6));
+        Assert.AreEqual(GameMode.None, InvokeGetGameMode(["GameModeMystery"], 6));
+        Assert.AreEqual(GameMode.BrawlStandard, InvokeGetGameMode(["GameModeBrawl", "GameModeStandard"], 6));
+        Assert.AreEqual(GameMode.BrawlCommanders, InvokeGetGameMode(["GameModeBrawl", "MutationCommanders"], 6));
+    }
+
+    private static GameMode InvokeGetGameMode(string[] modes, int playerCount)
+    {
+        var method = typeof(Sc2DirectStrikeParser).GetMethod("GetGameMode", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.IsNotNull(method);
+
+        object? result = method.Invoke(null, [new HashSet<string>(modes, StringComparer.Ordinal), playerCount]);
+        Assert.IsNotNull(result);
+
+        return (GameMode)result;
     }
 
     private async Task<Sc2Replay> GetReplay(string replayPath)

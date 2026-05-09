@@ -22,14 +22,110 @@ public static class Sc2DirectStrikeParser
             metadataPlayersById.TryAdd(metadataPlayer.PlayerID, metadataPlayer);
         }
 
+        DetailsPlayer[] detailsPlayers = [.. replay.Details.Players];
+
         return new()
         {
             BaseBuild = replay.Metadata?.BaseBuild ?? string.Empty,
             Duration = replay.Metadata is null ? TimeSpan.Zero : TimeSpan.FromSeconds(replay.Metadata.Duration),
+            GameMode = GetGameMode(GetGameModeUpgradeNames(replay), detailsPlayers.Length),
             GameTime = replay.Details.DateTimeUTC,
             TE = replay.Details.Title.EndsWith("TE", StringComparison.OrdinalIgnoreCase),
-            Players = [.. replay.Details.Players.Select((player, index) => ParseDetailsPlayer(player, GetMetadataPlayer(metadataPlayers, metadataPlayersById, index)))]
+            Players = [.. detailsPlayers.Select((player, index) => ParseDetailsPlayer(player, GetMetadataPlayer(metadataPlayers, metadataPlayersById, index)))]
         };
+    }
+
+    private static HashSet<string> GetGameModeUpgradeNames(Sc2Replay replay)
+    {
+        HashSet<string> modes = new(StringComparer.Ordinal);
+
+        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
+        {
+            if (upgradeEvent.Gameloop != 0)
+            {
+                continue;
+            }
+
+            string upgradeTypeName = upgradeEvent.UpgradeTypeName;
+            if (upgradeTypeName.StartsWith("GameMode", StringComparison.Ordinal)
+                || upgradeTypeName.StartsWith("Mutation", StringComparison.Ordinal))
+            {
+                modes.Add(upgradeTypeName);
+            }
+        }
+
+        return modes;
+    }
+
+    private static GameMode GetGameMode(HashSet<string> modes, int playerCount)
+    {
+        if (playerCount == 1)
+        {
+            return GameMode.Tutorial;
+        }
+
+        bool isBrawl = false;
+        bool isCommanders = false;
+        bool isStandard = false;
+
+        foreach (string mode in modes)
+        {
+            if (mode == "GameModeBrawl")
+            {
+                isBrawl = true;
+            }
+            else if (mode == "GameModeBrawlCommanders")
+            {
+                return GameMode.BrawlCommanders;
+            }
+            else if (mode == "GameModeBrawlStandard")
+            {
+                return GameMode.BrawlStandard;
+            }
+            else if (mode == "GameModeHeroicCommanders" || mode == "GameModeCommandersHeroic")
+            {
+                return GameMode.CommandersHeroic;
+            }
+            else if (mode == "GameModeCommanders" || mode == "MutationCommanders")
+            {
+                isCommanders = true;
+            }
+            else if (mode == "GameModeStandard")
+            {
+                isStandard = true;
+            }
+            else if (mode == "GameModeGear")
+            {
+                return GameMode.Gear;
+            }
+            else if (mode == "GameModeSwitch")
+            {
+                return GameMode.Switch;
+            }
+            else if (mode == "GameModeSabotage")
+            {
+                return GameMode.Sabotage;
+            }
+        }
+
+        if (isBrawl && isCommanders)
+        {
+            return GameMode.BrawlCommanders;
+        }
+        else if (isBrawl && isStandard)
+        {
+            return GameMode.BrawlStandard;
+        }
+        else if (isCommanders)
+        {
+            return GameMode.Commanders;
+        }
+        else if (isStandard)
+        {
+            return GameMode.Standard;
+        }
+
+        return GameMode.None;
     }
 
     private static DirectStrikePlayer ParseDetailsPlayer(DetailsPlayer player, MetadataPlayer? metadataPlayer)
