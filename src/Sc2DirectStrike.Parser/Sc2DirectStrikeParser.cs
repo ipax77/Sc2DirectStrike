@@ -23,6 +23,13 @@ public static class Sc2DirectStrikeParser
         }
 
         DetailsPlayer[] detailsPlayers = [.. replay.Details.Players];
+        DirectStrikePlayerContext[] playerContexts = [.. detailsPlayers.Select((player, index) =>
+        {
+            MetadataPlayer? metadataPlayer = GetMetadataPlayer(metadataPlayers, metadataPlayersById, index);
+            return new DirectStrikePlayerContext(ParseDetailsPlayer(player, metadataPlayer), index, metadataPlayer?.PlayerID);
+        })];
+
+        SetTrackerCommanders(replay, playerContexts);
 
         return new()
         {
@@ -32,9 +39,11 @@ public static class Sc2DirectStrikeParser
             GameTime = replay.Details.DateTimeUTC,
             Observers = [.. ParseObservers(replay)],
             TE = replay.Details.Title.EndsWith("TE", StringComparison.OrdinalIgnoreCase),
-            Players = [.. detailsPlayers.Select((player, index) => ParseDetailsPlayer(player, GetMetadataPlayer(metadataPlayers, metadataPlayersById, index)))]
+            Players = [.. playerContexts.Select(context => context.Player)]
         };
     }
+
+    private sealed record DirectStrikePlayerContext(DirectStrikePlayer Player, int DetailsIndex, int? MetadataPlayerId);
 
     private static IEnumerable<DirectStrikeObserver> ParseObservers(Sc2Replay replay)
     {
@@ -77,6 +86,132 @@ public static class Sc2DirectStrikeParser
             && int.TryParse(parts[0], out region)
             && int.TryParse(parts[2], out realm)
             && int.TryParse(parts[3], out id);
+    }
+
+    private static void SetTrackerCommanders(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts)
+    {
+        Dictionary<int, DirectStrikePlayer> playersByControlPlayerId = GetPlayersByControlPlayerId(replay, playerContexts);
+        HashSet<int> mappedControlPlayerIds = [];
+
+        foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
+        {
+            if (bornEvent.Gameloop > 1440
+                || !playersByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out DirectStrikePlayer? player)
+                || !TryParseWorkerCommander(bornEvent.UnitTypeName, out Commander commander))
+            {
+                continue;
+            }
+
+            if (mappedControlPlayerIds.Add(bornEvent.ControlPlayerId))
+            {
+                player.Commander = commander;
+            }
+        }
+    }
+
+    private static Dictionary<int, DirectStrikePlayer> GetPlayersByControlPlayerId(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts)
+    {
+        Dictionary<int, DirectStrikePlayer> playersByControlPlayerId = [];
+        Slot[] slots = [.. replay.Initdata?.LobbyState?.Slots ?? []];
+
+        Dictionary<(int Region, int Realm, int Id), DirectStrikePlayerContext> playersByToon = [];
+        Dictionary<int, DirectStrikePlayerContext> playersByMetadataPlayerId = [];
+        for (int i = 0; i < playerContexts.Length; i++)
+        {
+            DirectStrikePlayerContext context = playerContexts[i];
+            playersByToon.TryAdd((context.Player.Region, context.Player.Realm, context.Player.Id), context);
+
+            if (context.MetadataPlayerId is { } metadataPlayerId)
+            {
+                playersByMetadataPlayerId.TryAdd(metadataPlayerId, context);
+            }
+        }
+
+        foreach (SPlayerSetupEvent setupEvent in replay.TrackerEvents?.SPlayerSetupEvents ?? [])
+        {
+            if ((TryGetPlayerContextByUserId(setupEvent.UserId, slots, playersByToon, out DirectStrikePlayerContext? context)
+                    || TryGetPlayerContextBySlotId(setupEvent.SlotId, playerContexts, out context)
+                    || TryGetPlayerContextByPlayerId(setupEvent.PlayerId, playerContexts, playersByMetadataPlayerId, out context))
+                && context is not null)
+            {
+                playersByControlPlayerId.TryAdd(setupEvent.PlayerId, context.Player);
+            }
+        }
+
+        return playersByControlPlayerId;
+    }
+
+    private static bool TryGetPlayerContextByUserId(int? userId, Slot[] slots, Dictionary<(int Region, int Realm, int Id), DirectStrikePlayerContext> playersByToon, out DirectStrikePlayerContext? context)
+    {
+        context = null;
+        if (userId is null)
+        {
+            return false;
+        }
+
+        foreach (Slot slot in slots)
+        {
+            if (slot.UserId == userId
+                && TryParseToonHandle(slot.ToonHandle, out int region, out int realm, out int id)
+                && playersByToon.TryGetValue((region, realm, id), out context))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetPlayerContextBySlotId(int slotId, DirectStrikePlayerContext[] playerContexts, out DirectStrikePlayerContext? context)
+    {
+        if (slotId >= 0 && slotId < playerContexts.Length)
+        {
+            context = playerContexts[slotId];
+            return true;
+        }
+
+        context = null;
+        return false;
+    }
+
+    private static bool TryGetPlayerContextByPlayerId(int playerId, DirectStrikePlayerContext[] playerContexts, Dictionary<int, DirectStrikePlayerContext> playersByMetadataPlayerId, out DirectStrikePlayerContext? context)
+    {
+        if (playersByMetadataPlayerId.TryGetValue(playerId, out context))
+        {
+            return true;
+        }
+
+        int detailsIndex = playerId - 1;
+        if (detailsIndex >= 0 && detailsIndex < playerContexts.Length)
+        {
+            context = playerContexts[detailsIndex];
+            return true;
+        }
+
+        context = null;
+        return false;
+    }
+
+    private static bool TryParseWorkerCommander(string unitTypeName, out Commander commander)
+    {
+        const string workerPrefix = "Worker";
+
+        commander = Commander.None;
+        if (!unitTypeName.StartsWith(workerPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string commanderName = unitTypeName[workerPrefix.Length..];
+        commander = commanderName switch
+        {
+            nameof(Commander.Protoss) => Commander.Protoss,
+            nameof(Commander.Terran) => Commander.Terran,
+            nameof(Commander.Zerg) => Commander.Zerg,
+            _ => Enum.TryParse(commanderName, out Commander parsedCommander) ? parsedCommander : Commander.None,
+        };
+
+        return commander != Commander.None;
     }
 
     private static HashSet<string> GetGameModeUpgradeNames(Sc2Replay replay)

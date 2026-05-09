@@ -1,4 +1,5 @@
 ﻿using s2protocol.NET;
+using s2protocol.NET.Models;
 using Sc2DirectStrike.Parser;
 
 namespace Sc2DirectStrike.Tests;
@@ -127,6 +128,67 @@ public sealed class ParseTests
     }
 
     [TestMethod]
+    public async Task CanSetStandardCommandersFromEarlyWorkerEvents()
+    {
+        var replay = await GetReplay("testdata/Direct Strike TE (1904).SC2Replay");
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        CollectionAssert.AreEqual(
+            new[] { Commander.Protoss, Commander.Protoss, Commander.Protoss, Commander.Terran, Commander.Terran, Commander.Terran },
+            dsReplay.Players.Select(player => player.Commander).ToArray());
+    }
+
+    [TestMethod]
+    public async Task CanSetCommanderModeCommandersFromEarlyWorkerEvents()
+    {
+        var replay = await GetReplay("testdata/Direct Strike (10096).SC2Replay");
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        CollectionAssert.AreEqual(
+            new[] { Commander.Terran, Commander.Tychus, Commander.Raynor, Commander.Stukov, Commander.Fenix, Commander.Terran },
+            dsReplay.Players.Select(player => player.Commander).ToArray());
+    }
+
+    [TestMethod]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanMapTeInitdataMetadataAndTrackerCommandersByControlPlayerId(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.IsNotNull(replay.Initdata);
+        Assert.IsNotNull(replay.Metadata);
+        Assert.IsNotNull(replay.TrackerEvents);
+
+        var playersByToon = dsReplay.Players.ToDictionary(player => (player.Region, player.Realm, player.Id));
+        var metadataPlayersByPlayerId = replay.Metadata.Players.ToDictionary(player => player.PlayerID);
+        var firstWorkerByControlPlayerId = replay.TrackerEvents.SUnitBornEvents
+            .Where(unitBornEvent => unitBornEvent.Gameloop <= 1440 && TryParseWorkerCommander(unitBornEvent.UnitTypeName, out _))
+            .GroupBy(unitBornEvent => unitBornEvent.ControlPlayerId)
+            .ToDictionary(group => group.Key, group => group.First());
+
+        foreach (SPlayerSetupEvent setupEvent in replay.TrackerEvents.SPlayerSetupEvents)
+        {
+            Slot? slot = replay.Initdata.LobbyState.Slots.SingleOrDefault(slot => slot.UserId == setupEvent.UserId);
+            Assert.IsNotNull(slot);
+            Assert.IsTrue(TryParseToonHandle(slot.ToonHandle, out int region, out int realm, out int id));
+            Assert.IsTrue(playersByToon.TryGetValue((region, realm, id), out DirectStrikePlayer? player));
+
+            Assert.IsTrue(metadataPlayersByPlayerId.TryGetValue(setupEvent.PlayerId, out MetadataPlayer? metadataPlayer));
+            Assert.IsTrue(firstWorkerByControlPlayerId.TryGetValue(setupEvent.PlayerId, out SUnitBornEvent? workerEvent));
+            Assert.IsTrue(TryParseAssignedRaceCommander(metadataPlayer.AssignedRace, out Commander metadataCommander));
+            Assert.IsTrue(TryParseWorkerCommander(workerEvent.UnitTypeName, out Commander trackerCommander));
+
+            Assert.AreEqual(metadataCommander, player.Commander);
+            Assert.AreEqual(metadataCommander, trackerCommander);
+        }
+    }
+
+    [TestMethod]
     public async Task CanParseReplayWithoutMetadata()
     {
         ReplayDecoderOptions options = new()
@@ -168,6 +230,9 @@ public sealed class ParseTests
         var dsReplay = Sc2DirectStrikeParser.Parse(replay);
 
         Assert.AreEqual(GameMode.None, dsReplay.GameMode);
+        CollectionAssert.AreEqual(
+            new[] { Commander.Zerg, Commander.Protoss, Commander.Protoss, Commander.Zerg, Commander.Terran, Commander.Zerg },
+            dsReplay.Players.Select(player => player.Commander).ToArray());
     }
 
     [TestMethod]
@@ -197,6 +262,55 @@ public sealed class ParseTests
         Assert.IsNotNull(observer);
 
         return observer;
+    }
+
+    private static bool TryParseAssignedRaceCommander(string assignedRace, out Commander commander)
+    {
+        commander = assignedRace switch
+        {
+            "Prot" => Commander.Protoss,
+            "Terr" => Commander.Terran,
+            "Zerg" => Commander.Zerg,
+            _ => Commander.None,
+        };
+
+        return commander != Commander.None;
+    }
+
+    private static bool TryParseWorkerCommander(string unitTypeName, out Commander commander)
+    {
+        const string workerPrefix = "Worker";
+
+        commander = Commander.None;
+        if (!unitTypeName.StartsWith(workerPrefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        string commanderName = unitTypeName[workerPrefix.Length..];
+        commander = commanderName switch
+        {
+            nameof(Commander.Protoss) => Commander.Protoss,
+            nameof(Commander.Terran) => Commander.Terran,
+            nameof(Commander.Zerg) => Commander.Zerg,
+            _ => Enum.TryParse(commanderName, out Commander parsedCommander) ? parsedCommander : Commander.None,
+        };
+
+        return commander != Commander.None;
+    }
+
+    private static bool TryParseToonHandle(string toonHandle, out int region, out int realm, out int id)
+    {
+        region = 0;
+        realm = 0;
+        id = 0;
+
+        string[] parts = toonHandle.Split('-');
+        return parts.Length == 4
+            && string.Equals(parts[1], "S2", StringComparison.Ordinal)
+            && int.TryParse(parts[0], out region)
+            && int.TryParse(parts[2], out realm)
+            && int.TryParse(parts[3], out id);
     }
 
     private async Task<Sc2Replay> GetReplay(string replayPath)
