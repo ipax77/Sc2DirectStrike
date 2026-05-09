@@ -14,6 +14,7 @@ public static partial class Sc2DirectStrikeParser
         Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts = [];
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag = [];
         HashSet<int> mappedCommanderControlPlayerIds = [];
+        List<MiddleControlChange> middleControlChanges = [];
         MapLayout mapLayout = new();
 
         foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
@@ -136,6 +137,23 @@ public static partial class Sc2DirectStrikeParser
             refinery.Taken = true;
         }
 
+        foreach (SUnitOwnerChangeEvent ownerChangeEvent in replay.TrackerEvents?.SUnitOwnerChangeEvents ?? [])
+        {
+            if (ownerChangeEvent.UnitTagIndex != 20
+                || !TryGetMiddleControlTeam(ownerChangeEvent.UpkeepPlayerId, out int team))
+            {
+                continue;
+            }
+
+            middleControlChanges.Add(new(ownerChangeEvent.Gameloop, team));
+        }
+
+        if (middleControlChanges.Count > 0)
+        {
+            directStrikeReplay.FirstMiddleControlTeam = middleControlChanges[0].Team;
+            directStrikeReplay.MiddleChanges = [.. middleControlChanges.Select(change => ToTimeSpan(change.Gameloop))];
+        }
+
         foreach (DirectStrikePlayerContext context in playerContexts)
         {
             context.Player.RefineryTimes = [.. context.Refineries
@@ -179,6 +197,18 @@ public static partial class Sc2DirectStrikeParser
         return unitTypeName.StartsWith("RefineryMinerals", StringComparison.Ordinal)
             || unitTypeName.StartsWith("AssimilatorMinerals", StringComparison.Ordinal)
             || unitTypeName.StartsWith("ExtractorMinerals", StringComparison.Ordinal);
+    }
+
+    private static bool TryGetMiddleControlTeam(int upkeepPlayerId, out int team)
+    {
+        team = upkeepPlayerId switch
+        {
+            13 => 1,
+            14 => 2,
+            _ => 0,
+        };
+
+        return team != 0;
     }
 
     private static void SetGamePositions(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts, Pos planetary)
@@ -319,6 +349,8 @@ public static partial class Sc2DirectStrikeParser
     }
 
     private readonly record struct PlayerLayoutEntry(DirectStrikePlayer Player, PlayerLayout Layout);
+
+    private readonly record struct MiddleControlChange(int Gameloop, int Team);
 
     private readonly record struct Pos(int X, int Y);
 }

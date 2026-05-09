@@ -241,6 +241,28 @@ public sealed class ParseTests
     }
 
     [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetMiddleControlFromTrackerOwnerChangeEvents(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        ExpectedMiddleControlChange[] expectedMiddleChanges = GetExpectedMiddleControlChanges(replay);
+        CollectionAssert.AreEqual(
+            expectedMiddleChanges.Select(change => change.Time).ToArray(),
+            dsReplay.MiddleChanges);
+        Assert.AreEqual(
+            expectedMiddleChanges.Length == 0 ? 0 : expectedMiddleChanges[0].Team,
+            dsReplay.FirstMiddleControlTeam);
+    }
+
+    [TestMethod]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task CanMapTeInitdataMetadataAndTrackerCommandersByControlPlayerId(string replayName)
@@ -323,6 +345,8 @@ public sealed class ParseTests
         Assert.AreEqual(TimeSpan.Zero, dsReplay.GameEndTime);
         Assert.AreEqual(TimeSpan.Zero, dsReplay.CannonTime);
         Assert.AreEqual(TimeSpan.Zero, dsReplay.BunkerTime);
+        Assert.AreEqual(0, dsReplay.FirstMiddleControlTeam);
+        Assert.IsEmpty(dsReplay.MiddleChanges);
         Assert.IsTrue(dsReplay.Players.All(player => player.GamePos == 0));
         Assert.IsTrue(dsReplay.Players.All(player => player.TeamId == 0));
         Assert.IsTrue(dsReplay.Players.All(player => player.RefineryTimes.Length == 0));
@@ -409,6 +433,35 @@ public sealed class ParseTests
                 .Order()
                 .Select(gameloop => TimeSpan.FromSeconds(gameloop / 22.4D))
                 .ToArray())];
+    }
+
+    private static ExpectedMiddleControlChange[] GetExpectedMiddleControlChanges(Sc2Replay replay)
+    {
+        List<ExpectedMiddleControlChange> changes = [];
+        foreach (SUnitOwnerChangeEvent ownerChangeEvent in replay.TrackerEvents?.SUnitOwnerChangeEvents ?? [])
+        {
+            if (ownerChangeEvent.UnitTagIndex != 20
+                || !TryGetExpectedMiddleControlTeam(ownerChangeEvent.UpkeepPlayerId, out int team))
+            {
+                continue;
+            }
+
+            changes.Add(new(TimeSpan.FromSeconds(ownerChangeEvent.Gameloop / 22.4D), team));
+        }
+
+        return [.. changes];
+    }
+
+    private static bool TryGetExpectedMiddleControlTeam(int upkeepPlayerId, out int team)
+    {
+        team = upkeepPlayerId switch
+        {
+            13 => 1,
+            14 => 2,
+            _ => 0,
+        };
+
+        return team != 0;
     }
 
     private static Dictionary<int, int> GetPlayerIndexesByControlPlayerId(Sc2Replay replay, DirectStrikeReplay dsReplay)
@@ -524,6 +577,8 @@ public sealed class ParseTests
             && int.TryParse(parts[2], out realm)
             && int.TryParse(parts[3], out id);
     }
+
+    private readonly record struct ExpectedMiddleControlChange(TimeSpan Time, int Team);
 
     private async Task<Sc2Replay> GetReplay(string replayPath)
     {
