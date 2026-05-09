@@ -75,30 +75,9 @@ public static partial class Sc2DirectStrikeParser
             : null;
     }
 
-    private static void SetTrackerCommanders(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts)
+    private static Dictionary<int, DirectStrikePlayerContext> GetPlayerContextsByControlPlayerId(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts)
     {
-        Dictionary<int, DirectStrikePlayer> playersByControlPlayerId = GetPlayersByControlPlayerId(replay, playerContexts);
-        HashSet<int> mappedControlPlayerIds = [];
-
-        foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
-        {
-            if (bornEvent.Gameloop > 1440
-                || !playersByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out DirectStrikePlayer? player)
-                || !TryParseWorkerCommander(bornEvent.UnitTypeName, out Commander commander))
-            {
-                continue;
-            }
-
-            if (mappedControlPlayerIds.Add(bornEvent.ControlPlayerId))
-            {
-                player.Commander = commander;
-            }
-        }
-    }
-
-    private static Dictionary<int, DirectStrikePlayer> GetPlayersByControlPlayerId(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts)
-    {
-        Dictionary<int, DirectStrikePlayer> playersByControlPlayerId = [];
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId = [];
         Slot[] slots = [.. replay.Initdata?.LobbyState?.Slots ?? []];
 
         Dictionary<(int Region, int Realm, int Id), DirectStrikePlayerContext> playersByToon = [];
@@ -121,11 +100,11 @@ public static partial class Sc2DirectStrikeParser
                     || TryGetPlayerContextByPlayerId(setupEvent.PlayerId, playerContexts, playersByMetadataPlayerId, out context))
                 && context is not null)
             {
-                playersByControlPlayerId.TryAdd(setupEvent.PlayerId, context.Player);
+                playerContextsByControlPlayerId.TryAdd(setupEvent.PlayerId, context);
             }
         }
 
-        return playersByControlPlayerId;
+        return playerContextsByControlPlayerId;
     }
 
     private static bool TryGetPlayerContextByUserId(int? userId, Slot[] slots, Dictionary<(int Region, int Realm, int Id), DirectStrikePlayerContext> playersByToon, out DirectStrikePlayerContext? context)

@@ -8,14 +8,24 @@ public static partial class Sc2DirectStrikeParser
 {
     private const double GameLoopsPerSecond = 22.4D;
 
-    private static void SetTrackerLayout(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts, DirectStrikeReplay directStrikeReplay)
+    private static void SetTrackerData(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts, DirectStrikeReplay directStrikeReplay)
     {
-        Dictionary<int, DirectStrikePlayer> playersByControlPlayerId = GetPlayersByControlPlayerId(replay, playerContexts);
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId = GetPlayerContextsByControlPlayerId(replay, playerContexts);
         Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts = [];
+        Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag = [];
+        HashSet<int> mappedCommanderControlPlayerIds = [];
         MapLayout mapLayout = new();
 
         foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
         {
+            if (bornEvent.Gameloop <= 1440
+                && playerContextsByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out DirectStrikePlayerContext? commanderContext)
+                && TryParseWorkerCommander(bornEvent.UnitTypeName, out Commander commander)
+                && mappedCommanderControlPlayerIds.Add(bornEvent.ControlPlayerId))
+            {
+                commanderContext.Player.Commander = commander;
+            }
+
             if (bornEvent.Gameloop != 0)
             {
                 continue;
@@ -26,7 +36,7 @@ public static partial class Sc2DirectStrikeParser
             {
                 case "StagingAreaFootprintSouth":
                 case "AreaMarkerSouth":
-                    if (TryGetPlayerLayout(playersByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out DirectStrikePlayer? southPlayer, out PlayerLayout? southLayout))
+                    if (TryGetPlayerLayout(playerContextsByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out DirectStrikePlayer? southPlayer, out PlayerLayout? southLayout))
                     {
                         southLayout.South = pos;
                         southPlayer.TeamId = bornEvent.Y * bornEvent.Y > 10000 ? 1 : 2;
@@ -36,7 +46,7 @@ public static partial class Sc2DirectStrikeParser
 
                 case "StagingAreaFootprintWest":
                 case "AreaMarkerWest":
-                    if (TryGetPlayerLayout(playersByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out _, out PlayerLayout? westLayout))
+                    if (TryGetPlayerLayout(playerContextsByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out _, out PlayerLayout? westLayout))
                     {
                         westLayout.West = pos;
                     }
@@ -45,7 +55,7 @@ public static partial class Sc2DirectStrikeParser
 
                 case "StagingAreaFootprintNorth":
                 case "AreaMarkerNorth":
-                    if (TryGetPlayerLayout(playersByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out _, out PlayerLayout? northLayout))
+                    if (TryGetPlayerLayout(playerContextsByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out _, out PlayerLayout? northLayout))
                     {
                         northLayout.North = pos;
                     }
@@ -54,7 +64,7 @@ public static partial class Sc2DirectStrikeParser
 
                 case "StagingAreaFootprintEast":
                 case "AreaMarkerEast":
-                    if (TryGetPlayerLayout(playersByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out _, out PlayerLayout? eastLayout))
+                    if (TryGetPlayerLayout(playerContextsByControlPlayerId, playerLayouts, bornEvent.ControlPlayerId, out _, out PlayerLayout? eastLayout))
                     {
                         eastLayout.East = pos;
                     }
@@ -99,6 +109,39 @@ public static partial class Sc2DirectStrikeParser
 
                     break;
             }
+
+            if (bornEvent.UnitTypeName.StartsWith("MineralField", StringComparison.Ordinal)
+                && playerContextsByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out DirectStrikePlayerContext? refineryContext))
+            {
+                DirectStrikePlayerRefinery refinery = new()
+                {
+                    UnitTagIndex = bornEvent.UnitTagIndex,
+                    UnitTagRecycle = bornEvent.UnitTagRecycle,
+                };
+                refineryContext.Refineries.Add(refinery);
+                refineriesByTag.TryAdd((refinery.UnitTagIndex, refinery.UnitTagRecycle), refinery);
+            }
+        }
+
+        foreach (SUnitTypeChangeEvent typeChangeEvent in replay.TrackerEvents?.SUnitTypeChangeEvents ?? [])
+        {
+            if (!IsRefineryMinerals(typeChangeEvent.UnitTypeName)
+                || !refineriesByTag.TryGetValue((typeChangeEvent.UnitTagIndex, typeChangeEvent.UnitTagRecycle), out DirectStrikePlayerRefinery? refinery)
+                || refinery.Taken)
+            {
+                continue;
+            }
+
+            refinery.Gameloop = typeChangeEvent.Gameloop;
+            refinery.Taken = true;
+        }
+
+        foreach (DirectStrikePlayerContext context in playerContexts)
+        {
+            context.Player.RefineryTimes = [.. context.Refineries
+                .Where(refinery => refinery.Taken)
+                .OrderBy(refinery => refinery.Gameloop)
+                .Select(refinery => ToTimeSpan(refinery.Gameloop))];
         }
 
         if (mapLayout.Planetary is { } planetary)
@@ -108,18 +151,20 @@ public static partial class Sc2DirectStrikeParser
     }
 
     private static bool TryGetPlayerLayout(
-        Dictionary<int, DirectStrikePlayer> playersByControlPlayerId,
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
         Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts,
         int controlPlayerId,
         [NotNullWhen(true)] out DirectStrikePlayer? player,
         [NotNullWhen(true)] out PlayerLayout? playerLayout)
     {
-        if (!playersByControlPlayerId.TryGetValue(controlPlayerId, out player))
+        if (!playerContextsByControlPlayerId.TryGetValue(controlPlayerId, out DirectStrikePlayerContext? context))
         {
+            player = null;
             playerLayout = null;
             return false;
         }
 
+        player = context.Player;
         if (!playerLayouts.TryGetValue(player, out playerLayout))
         {
             playerLayout = new();
@@ -127,6 +172,13 @@ public static partial class Sc2DirectStrikeParser
         }
 
         return true;
+    }
+
+    private static bool IsRefineryMinerals(string unitTypeName)
+    {
+        return unitTypeName.StartsWith("RefineryMinerals", StringComparison.Ordinal)
+            || unitTypeName.StartsWith("AssimilatorMinerals", StringComparison.Ordinal)
+            || unitTypeName.StartsWith("ExtractorMinerals", StringComparison.Ordinal);
     }
 
     private static void SetGamePositions(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts, Pos planetary)

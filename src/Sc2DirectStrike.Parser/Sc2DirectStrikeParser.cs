@@ -29,8 +29,6 @@ public static partial class Sc2DirectStrikeParser
             return new DirectStrikePlayerContext(ParseDetailsPlayer(player, metadataPlayer), index, metadataPlayer?.PlayerID);
         })];
 
-        SetTrackerCommanders(replay, playerContexts);
-
         DirectStrikeReplay directStrikeReplay = new()
         {
             BaseBuild = replay.Metadata?.BaseBuild ?? string.Empty,
@@ -42,10 +40,21 @@ public static partial class Sc2DirectStrikeParser
             Players = [.. playerContexts.Select(context => context.Player)]
         };
 
-        SetTrackerLayout(replay, playerContexts, directStrikeReplay);
+        SetTrackerData(replay, playerContexts, directStrikeReplay);
 
         return directStrikeReplay;
     }
 
-    private sealed record DirectStrikePlayerContext(DirectStrikePlayer Player, int DetailsIndex, int? MetadataPlayerId);
+    private sealed record DirectStrikePlayerContext(DirectStrikePlayer Player, int DetailsIndex, int? MetadataPlayerId)
+    {
+        public List<DirectStrikePlayerRefinery> Refineries { get; } = [];
+    }
+
+    private sealed class DirectStrikePlayerRefinery
+    {
+        public int UnitTagIndex { get; set; }
+        public int UnitTagRecycle { get; set; }
+        public int Gameloop { get; set; }
+        public bool Taken { get; set; }
+    }
 }

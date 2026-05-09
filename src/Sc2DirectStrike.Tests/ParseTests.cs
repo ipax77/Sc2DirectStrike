@@ -218,6 +218,29 @@ public sealed class ParseTests
     }
 
     [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetPlayerRefineryTimesFromTrackerEvents(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        TimeSpan[][] expectedRefineryTimes = GetExpectedPlayerRefineryTimes(replay, dsReplay);
+        for (int i = 0; i < dsReplay.Players.Count; i++)
+        {
+            CollectionAssert.AreEqual(
+                expectedRefineryTimes[i],
+                dsReplay.Players[i].RefineryTimes,
+                $"Unexpected refinery times for player index {i}.");
+        }
+    }
+
+    [TestMethod]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task CanMapTeInitdataMetadataAndTrackerCommandersByControlPlayerId(string replayName)
@@ -302,6 +325,7 @@ public sealed class ParseTests
         Assert.AreEqual(TimeSpan.Zero, dsReplay.BunkerTime);
         Assert.IsTrue(dsReplay.Players.All(player => player.GamePos == 0));
         Assert.IsTrue(dsReplay.Players.All(player => player.TeamId == 0));
+        Assert.IsTrue(dsReplay.Players.All(player => player.RefineryTimes.Length == 0));
         CollectionAssert.AreEqual(
             new[] { Commander.Zerg, Commander.Protoss, Commander.Protoss, Commander.Zerg, Commander.Terran, Commander.Zerg },
             dsReplay.Players.Select(player => player.Commander).ToArray());
@@ -345,6 +369,111 @@ public sealed class ParseTests
         return objective?.SUnitDiedEvent is { } diedEvent
             ? TimeSpan.FromSeconds(diedEvent.Gameloop / 22.4D)
             : TimeSpan.Zero;
+    }
+
+    private static TimeSpan[][] GetExpectedPlayerRefineryTimes(Sc2Replay replay, DirectStrikeReplay dsReplay)
+    {
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> refineryOwnerIndexesByTag = [];
+
+        foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
+        {
+            if (bornEvent.Gameloop != 0
+                || !bornEvent.UnitTypeName.StartsWith("MineralField", StringComparison.Ordinal)
+                || !playerIndexesByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            refineryOwnerIndexesByTag.TryAdd((bornEvent.UnitTagIndex, bornEvent.UnitTagRecycle), playerIndex);
+        }
+
+        List<int>[] refineryGameloopsByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new List<int>())];
+        HashSet<(int UnitTagIndex, int UnitTagRecycle)> takenRefineries = [];
+
+        foreach (SUnitTypeChangeEvent typeChangeEvent in replay.TrackerEvents?.SUnitTypeChangeEvents ?? [])
+        {
+            (int UnitTagIndex, int UnitTagRecycle) tag = (typeChangeEvent.UnitTagIndex, typeChangeEvent.UnitTagRecycle);
+            if (!IsExpectedRefineryMinerals(typeChangeEvent.UnitTypeName)
+                || !refineryOwnerIndexesByTag.TryGetValue(tag, out int playerIndex)
+                || !takenRefineries.Add(tag))
+            {
+                continue;
+            }
+
+            refineryGameloopsByPlayer[playerIndex].Add(typeChangeEvent.Gameloop);
+        }
+
+        return [.. refineryGameloopsByPlayer
+            .Select(gameloops => gameloops
+                .Order()
+                .Select(gameloop => TimeSpan.FromSeconds(gameloop / 22.4D))
+                .ToArray())];
+    }
+
+    private static Dictionary<int, int> GetPlayerIndexesByControlPlayerId(Sc2Replay replay, DirectStrikeReplay dsReplay)
+    {
+        Dictionary<int, int> playerIndexesByControlPlayerId = [];
+        Dictionary<(int Region, int Realm, int Id), int> playerIndexesByToon = [];
+        Dictionary<int, int> playerIndexesBySlotId = [];
+
+        for (int i = 0; i < dsReplay.Players.Count; i++)
+        {
+            DirectStrikePlayer player = dsReplay.Players[i];
+            playerIndexesByToon.TryAdd((player.Region, player.Realm, player.Id), i);
+            playerIndexesBySlotId.TryAdd(player.SlotId, i);
+        }
+
+        Slot[] slots = [.. replay.Initdata?.LobbyState?.Slots ?? []];
+        foreach (SPlayerSetupEvent setupEvent in replay.TrackerEvents?.SPlayerSetupEvents ?? [])
+        {
+            if ((TryGetPlayerIndexByUserId(setupEvent.UserId, slots, playerIndexesByToon, out int playerIndex)
+                    || playerIndexesBySlotId.TryGetValue(setupEvent.SlotId, out playerIndex)
+                    || TryGetPlayerIndexByPlayerId(setupEvent.PlayerId, dsReplay, out playerIndex)))
+            {
+                playerIndexesByControlPlayerId.TryAdd(setupEvent.PlayerId, playerIndex);
+            }
+        }
+
+        return playerIndexesByControlPlayerId;
+    }
+
+    private static bool TryGetPlayerIndexByUserId(
+        int? userId,
+        Slot[] slots,
+        Dictionary<(int Region, int Realm, int Id), int> playerIndexesByToon,
+        out int playerIndex)
+    {
+        playerIndex = -1;
+        if (userId is null)
+        {
+            return false;
+        }
+
+        foreach (Slot slot in slots)
+        {
+            if (slot.UserId == userId
+                && TryParseToonHandle(slot.ToonHandle, out int region, out int realm, out int id)
+                && playerIndexesByToon.TryGetValue((region, realm, id), out playerIndex))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TryGetPlayerIndexByPlayerId(int playerId, DirectStrikeReplay dsReplay, out int playerIndex)
+    {
+        playerIndex = playerId - 1;
+        return playerIndex >= 0 && playerIndex < dsReplay.Players.Count;
+    }
+
+    private static bool IsExpectedRefineryMinerals(string unitTypeName)
+    {
+        return unitTypeName.StartsWith("RefineryMinerals", StringComparison.Ordinal)
+            || unitTypeName.StartsWith("AssimilatorMinerals", StringComparison.Ordinal)
+            || unitTypeName.StartsWith("ExtractorMinerals", StringComparison.Ordinal);
     }
 
     private static bool TryParseAssignedRaceCommander(string assignedRace, out Commander commander)
