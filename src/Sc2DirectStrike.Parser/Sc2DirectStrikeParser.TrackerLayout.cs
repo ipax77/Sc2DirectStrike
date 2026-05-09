@@ -19,6 +19,8 @@ public static partial class Sc2DirectStrikeParser
         List<MiddleControlChange> middleControlChanges = [];
         MapLayout mapLayout = new();
 
+        SetPlayerStats(replay, playerContextsByControlPlayerId, playerContexts);
+
         foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
         {
             if (bornEvent.Gameloop <= 1440
@@ -221,7 +223,48 @@ public static partial class Sc2DirectStrikeParser
         foreach (DirectStrikePlayerContext context in playerContextsByControlPlayerId.Values.Distinct())
         {
             context.Player.Spawns = spawnUnitsByPlayer.TryGetValue(context.Player, out List<TrackedSpawnUnit>? spawnUnits)
-                ? GroupPlayerSpawns(spawnUnits)
+                ? GroupPlayerSpawns(spawnUnits, context.Player.Stats)
+                : [];
+        }
+    }
+
+    private static void SetPlayerStats(
+        Sc2Replay replay,
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
+        DirectStrikePlayerContext[] playerContexts)
+    {
+        Dictionary<DirectStrikePlayer, List<DirectStrikePlayerStats>> statsByPlayer = [];
+
+        foreach (SPlayerStatsEvent statsEvent in replay.TrackerEvents?.SPlayerStatsEvents ?? [])
+        {
+            if (!playerContextsByControlPlayerId.TryGetValue(statsEvent.PlayerId, out DirectStrikePlayerContext? context))
+            {
+                continue;
+            }
+
+            DirectStrikePlayerStats stats = new()
+            {
+                Gameloop = statsEvent.Gameloop,
+                Time = ToTimeSpan(statsEvent.Gameloop),
+                MineralsCollectionRate = statsEvent.MineralsCollectionRate,
+                MineralsUsedActiveForces = statsEvent.MineralsUsedActiveForces,
+                MineralsUsedCurrentTechnology = statsEvent.MineralsUsedCurrentTechnology,
+                MineralsKilledArmy = statsEvent.MineralsKilledArmy,
+                MineralsLostArmy = statsEvent.MineralsLostArmy,
+            };
+
+            GetPlayerStats(statsByPlayer, context.Player).Add(stats);
+            if (stats.MineralsCollectionRate > 0 && stats.Gameloop >= context.Player.DurationGameloop)
+            {
+                context.Player.DurationGameloop = stats.Gameloop;
+                context.Player.Duration = stats.Time;
+            }
+        }
+
+        foreach (DirectStrikePlayerContext context in playerContexts)
+        {
+            context.Player.Stats = statsByPlayer.TryGetValue(context.Player, out List<DirectStrikePlayerStats>? stats)
+                ? stats.OrderBy(stat => stat.Gameloop).ToList().AsReadOnly()
                 : [];
         }
     }
@@ -262,7 +305,18 @@ public static partial class Sc2DirectStrikeParser
         return spawnUnits;
     }
 
-    private static ReadOnlyCollection<DirectStrikePlayerSpawn> GroupPlayerSpawns(List<TrackedSpawnUnit> spawnUnits)
+    private static List<DirectStrikePlayerStats> GetPlayerStats(Dictionary<DirectStrikePlayer, List<DirectStrikePlayerStats>> statsByPlayer, DirectStrikePlayer player)
+    {
+        if (!statsByPlayer.TryGetValue(player, out List<DirectStrikePlayerStats>? stats))
+        {
+            stats = [];
+            statsByPlayer.Add(player, stats);
+        }
+
+        return stats;
+    }
+
+    private static ReadOnlyCollection<DirectStrikePlayerSpawn> GroupPlayerSpawns(List<TrackedSpawnUnit> spawnUnits, IReadOnlyList<DirectStrikePlayerStats> playerStats)
     {
         List<DirectStrikePlayerSpawn> spawns = [];
         List<TrackedSpawnUnit> currentSpawnUnits = [];
@@ -278,7 +332,7 @@ public static partial class Sc2DirectStrikeParser
             }
             else if (spawnUnit.Gameloop - lastUnitGameloop > SpawnGroupWindowGameloops)
             {
-                spawns.Add(CreatePlayerSpawn(spawnNumber, currentSpawnGameloop, currentSpawnUnits));
+                spawns.Add(CreatePlayerSpawn(spawnNumber, currentSpawnGameloop, currentSpawnUnits, playerStats));
                 spawnNumber++;
                 currentSpawnUnits = [];
                 currentSpawnGameloop = spawnUnit.Gameloop;
@@ -290,19 +344,21 @@ public static partial class Sc2DirectStrikeParser
 
         if (currentSpawnUnits.Count > 0)
         {
-            spawns.Add(CreatePlayerSpawn(spawnNumber, currentSpawnGameloop, currentSpawnUnits));
+            spawns.Add(CreatePlayerSpawn(spawnNumber, currentSpawnGameloop, currentSpawnUnits, playerStats));
         }
 
         return spawns.AsReadOnly();
     }
 
-    private static DirectStrikePlayerSpawn CreatePlayerSpawn(int number, int startGameloop, List<TrackedSpawnUnit> spawnUnits)
+    private static DirectStrikePlayerSpawn CreatePlayerSpawn(int number, int startGameloop, List<TrackedSpawnUnit> spawnUnits, IReadOnlyList<DirectStrikePlayerStats> playerStats)
     {
+        int endGameloop = spawnUnits.Max(unit => unit.Gameloop);
         return new()
         {
             Number = number,
             StartGameloop = startGameloop,
-            EndGameloop = spawnUnits.Max(unit => unit.Gameloop),
+            EndGameloop = endGameloop,
+            SummaryStats = playerStats.FirstOrDefault(stat => stat.Gameloop >= endGameloop),
             Units = spawnUnits
                 .OrderBy(unit => unit.Gameloop)
                 .Select(unit => new DirectStrikeSpawnUnit()

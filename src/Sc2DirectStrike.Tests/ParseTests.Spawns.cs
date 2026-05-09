@@ -110,6 +110,34 @@ public sealed partial class ParseTests
     }
 
     [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetPlayerSpawnSummaryStatsFromPlayerStats(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        foreach (DirectStrikePlayer player in dsReplay.Players)
+        {
+            foreach (DirectStrikePlayerSpawn spawn in player.Spawns)
+            {
+                DirectStrikePlayerStats? expected = player.Stats.FirstOrDefault(stats => stats.Gameloop >= spawn.EndGameloop);
+                Assert.AreSame(expected, spawn.SummaryStats);
+                if (spawn.SummaryStats is { } summaryStats)
+                {
+                    Assert.IsGreaterThanOrEqualTo(spawn.EndGameloop, summaryStats.Gameloop);
+                    Assert.IsFalse(player.Stats.Any(stats => stats.Gameloop >= spawn.EndGameloop && stats.Gameloop < summaryStats.Gameloop));
+                }
+            }
+        }
+    }
+
+    [TestMethod]
     public void PolygonContainsInsideAndBoundaryPoints()
     {
         Type parserType = typeof(Sc2DirectStrikeParser);

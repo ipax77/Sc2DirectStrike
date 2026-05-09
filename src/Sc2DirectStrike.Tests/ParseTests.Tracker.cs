@@ -117,6 +117,50 @@ public sealed partial class ParseTests
             dsReplay.FirstMiddleControlTeam);
     }
 
+    [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetPlayerStatsFromTrackerEvents(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        ExpectedPlayerStats[][] expectedStats = GetExpectedPlayerStats(replay, dsReplay);
+        Assert.IsTrue(dsReplay.Players.Any(player => player.Stats.Count > 0));
+        for (int i = 0; i < dsReplay.Players.Count; i++)
+        {
+            DirectStrikePlayer player = dsReplay.Players[i];
+            Assert.IsTrue(player.Stats.Select(stats => stats.Gameloop).SequenceEqual(player.Stats.Select(stats => stats.Gameloop).Order()));
+            Assert.HasCount(expectedStats[i].Length, player.Stats, $"Unexpected stats count for player index {i}.");
+
+            int expectedDurationGameloop = expectedStats[i]
+                .Where(stats => stats.MineralsCollectionRate > 0)
+                .Select(stats => stats.Gameloop)
+                .DefaultIfEmpty()
+                .Max();
+            Assert.AreEqual(expectedDurationGameloop, player.DurationGameloop);
+            Assert.AreEqual(TimeSpan.FromSeconds(expectedDurationGameloop / 22.4D), player.Duration);
+
+            for (int j = 0; j < expectedStats[i].Length; j++)
+            {
+                ExpectedPlayerStats expected = expectedStats[i][j];
+                DirectStrikePlayerStats actual = player.Stats[j];
+                Assert.AreEqual(expected.Gameloop, actual.Gameloop);
+                Assert.AreEqual(TimeSpan.FromSeconds(expected.Gameloop / 22.4D), actual.Time);
+                Assert.AreEqual(expected.MineralsCollectionRate, actual.MineralsCollectionRate);
+                Assert.AreEqual(expected.MineralsUsedActiveForces, actual.MineralsUsedActiveForces);
+                Assert.AreEqual(expected.MineralsUsedCurrentTechnology, actual.MineralsUsedCurrentTechnology);
+                Assert.AreEqual(expected.MineralsKilledArmy, actual.MineralsKilledArmy);
+                Assert.AreEqual(expected.MineralsLostArmy, actual.MineralsLostArmy);
+            }
+        }
+    }
+
     private static TimeSpan GetObjectiveDeathTime(Sc2Replay replay, string unitTypeName)
     {
         SUnitBornEvent? objective = replay.TrackerEvents?.SUnitBornEvents.SingleOrDefault(unitBornEvent =>
@@ -183,6 +227,30 @@ public sealed partial class ParseTests
         }
 
         return [.. changes];
+    }
+
+    private static ExpectedPlayerStats[][] GetExpectedPlayerStats(Sc2Replay replay, DirectStrikeReplay dsReplay)
+    {
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        List<ExpectedPlayerStats>[] statsByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new List<ExpectedPlayerStats>())];
+
+        foreach (SPlayerStatsEvent statsEvent in replay.TrackerEvents?.SPlayerStatsEvents ?? [])
+        {
+            if (!playerIndexesByControlPlayerId.TryGetValue(statsEvent.PlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            statsByPlayer[playerIndex].Add(new(
+                statsEvent.Gameloop,
+                statsEvent.MineralsCollectionRate,
+                statsEvent.MineralsUsedActiveForces,
+                statsEvent.MineralsUsedCurrentTechnology,
+                statsEvent.MineralsKilledArmy,
+                statsEvent.MineralsLostArmy));
+        }
+
+        return [.. statsByPlayer.Select(stats => stats.OrderBy(stat => stat.Gameloop).ToArray())];
     }
 
     private static bool TryGetExpectedMiddleControlTeam(int upkeepPlayerId, out int team)
@@ -263,4 +331,12 @@ public sealed partial class ParseTests
     }
 
     private readonly record struct ExpectedMiddleControlChange(TimeSpan Time, int Team);
+
+    private readonly record struct ExpectedPlayerStats(
+        int Gameloop,
+        int MineralsCollectionRate,
+        int MineralsUsedActiveForces,
+        int MineralsUsedCurrentTechnology,
+        int MineralsKilledArmy,
+        int MineralsLostArmy);
 }

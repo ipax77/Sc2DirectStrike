@@ -6,6 +6,8 @@ namespace Sc2DirectStrike.Parser;
 public sealed class DirectStrikePlayer
 {
     public double APM { get; set; }
+    public TimeSpan Duration { get; set; }
+    public int DurationGameloop { get; set; }
     public int GamePos { get; set; }
     public int TeamId { get; set; }
     public int SlotId { get; set; }
@@ -20,4 +22,5 @@ public sealed class DirectStrikePlayer
     public int Region { get; set; }
     public int Realm { get; set; }
     public ReadOnlyCollection<DirectStrikePlayerSpawn> Spawns { get; set; } = [];
+    public ReadOnlyCollection<DirectStrikePlayerStats> Stats { get; set; } = [];
 }
