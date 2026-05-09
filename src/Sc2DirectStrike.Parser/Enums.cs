@@ -50,9 +50,19 @@ public enum Breakpoint
     All = 4
 }
 
+public enum Race
+{
+    None = 0,
+    Random = 1,
+    Terran = 2,
+    Protoss = 3,
+    Zerg = 4
+}
+
 public enum PlayerResult
 {
     None = 0,
     Win = 1,
-    Los = 2
+    Loss = 2,
+    Undecided = 3
 }

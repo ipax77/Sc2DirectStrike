@@ -9,6 +9,7 @@ public sealed class ParseTests
     private readonly ReplayDecoder replayDecoder = new();
     private readonly ReplayDecoderOptions replayDecoderOptions = new()
     {
+        Details = true,
         Initdata = true,
         Metadata = true,
         GameEvents = false,
@@ -34,8 +35,86 @@ public sealed class ParseTests
         Assert.IsNotEmpty(dsReplay.Players);
     }
 
+    [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay", 525)]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay", 483)]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay", 722)]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay", 341)]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay", 483)]
+    public async Task CanSetReplayMetadata(string replayName, int durationSeconds)
+    {
+        var replay = await GetReplay(replayName);
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.IsNotNull(replay.Metadata);
+        Assert.AreEqual(replay.Metadata.BaseBuild, dsReplay.BaseBuild);
+        Assert.IsNotEmpty(dsReplay.BaseBuild);
+        Assert.AreEqual(TimeSpan.FromSeconds(durationSeconds), dsReplay.Duration);
+    }
+
+    [TestMethod]
+    public async Task CanSetPlayerMetadata()
+    {
+        var replay = await GetReplay("testdata/Direct Strike (10060).SC2Replay");
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+        var firstPlayer = dsReplay.Players[0];
+        var fifthPlayer = dsReplay.Players[4];
+
+        Assert.AreEqual(20D, firstPlayer.APM);
+        Assert.AreEqual(PlayerResult.Win, firstPlayer.Result);
+        Assert.AreEqual(Race.Random, firstPlayer.SelectedRace);
+
+        Assert.AreEqual(5D, fifthPlayer.APM);
+        Assert.AreEqual(PlayerResult.Loss, fifthPlayer.Result);
+        Assert.AreEqual(Race.Terran, fifthPlayer.SelectedRace);
+    }
+
+    [TestMethod]
+    public async Task CanMapTeMetadataByPlayerIdAsListIndex()
+    {
+        var replay = await GetReplay("testdata/Direct Strike TE (1910).SC2Replay");
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+        var playerWithSkippedSlotId = dsReplay.Players[3];
+
+        Assert.AreEqual(5, playerWithSkippedSlotId.SlotId);
+        Assert.AreEqual(62D, playerWithSkippedSlotId.APM);
+        Assert.AreEqual(PlayerResult.Undecided, playerWithSkippedSlotId.Result);
+        Assert.AreEqual(Race.Terran, playerWithSkippedSlotId.SelectedRace);
+    }
+
+    [TestMethod]
+    public async Task CanParseReplayWithoutMetadata()
+    {
+        ReplayDecoderOptions options = new()
+        {
+            Details = true,
+            Initdata = true,
+            Metadata = false,
+            GameEvents = false,
+            MessageEvents = false,
+            TrackerEvents = true,
+            AttributeEvents = false,
+        };
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10060).SC2Replay", options);
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.AreEqual(string.Empty, dsReplay.BaseBuild);
+        Assert.AreEqual(TimeSpan.Zero, dsReplay.Duration);
+        Assert.AreEqual(PlayerResult.Win, dsReplay.Players[0].Result);
+        Assert.AreEqual(Race.None, dsReplay.Players[0].SelectedRace);
+    }
+
     private async Task<Sc2Replay> GetReplay(string replayPath)
     {
-        return await replayDecoder.DecodeAsync(replayPath) ?? throw new ArgumentNullException(nameof(replayPath));
+        return await GetReplay(replayPath, replayDecoderOptions);
+    }
+
+    private async Task<Sc2Replay> GetReplay(string replayPath, ReplayDecoderOptions options)
+    {
+        return await replayDecoder.DecodeAsync(replayPath, options, CancellationToken.None) ?? throw new ArgumentNullException(nameof(replayPath));
     }
 }
