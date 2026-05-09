@@ -101,6 +101,32 @@ public sealed class ParseTests
     }
 
     [TestMethod]
+    public async Task CanSetTeObserversFromInitdata()
+    {
+        var replay = await GetReplay("testdata/Direct Strike TE (1904).SC2Replay");
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.HasCount(6, dsReplay.Players);
+        Assert.HasCount(2, dsReplay.Observers);
+        Assert.IsFalse(dsReplay.Players.Any(player => player.Name is "Apache" or "Nova"));
+
+        DirectStrikeObserver apache = AssertObserver(dsReplay, "Apache");
+        Assert.AreEqual("DIRSTK", apache.Clan);
+        Assert.AreEqual(5, apache.SlotId);
+        Assert.AreEqual(2, apache.Region);
+        Assert.AreEqual(1, apache.Realm);
+        Assert.AreEqual(8641442, apache.Id);
+
+        DirectStrikeObserver nova = AssertObserver(dsReplay, "Nova");
+        Assert.AreEqual("DIRSTK", nova.Clan);
+        Assert.AreEqual(0, nova.SlotId);
+        Assert.AreEqual(2, nova.Region);
+        Assert.AreEqual(1, nova.Realm);
+        Assert.AreEqual(9493659, nova.Id);
+    }
+
+    [TestMethod]
     public async Task CanParseReplayWithoutMetadata()
     {
         ReplayDecoderOptions options = new()
@@ -121,6 +147,7 @@ public sealed class ParseTests
         Assert.AreEqual(TimeSpan.Zero, dsReplay.Duration);
         Assert.AreEqual(PlayerResult.Win, dsReplay.Players[0].Result);
         Assert.AreEqual(Race.None, dsReplay.Players[0].SelectedRace);
+        Assert.IsEmpty(dsReplay.Observers);
     }
 
     [TestMethod]
@@ -162,6 +189,14 @@ public sealed class ParseTests
         Assert.IsNotNull(result);
 
         return (GameMode)result;
+    }
+
+    private static DirectStrikeObserver AssertObserver(DirectStrikeReplay replay, string name)
+    {
+        DirectStrikeObserver? observer = replay.Observers.SingleOrDefault(observer => observer.Name == name);
+        Assert.IsNotNull(observer);
+
+        return observer;
     }
 
     private async Task<Sc2Replay> GetReplay(string replayPath)

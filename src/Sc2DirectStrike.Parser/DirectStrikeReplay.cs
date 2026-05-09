@@ -10,5 +10,6 @@ public sealed class DirectStrikeReplay
     public DateTime GameTime { get; set; }
     public bool TE { get; set; }
     public int WinnerTeam { get; set; }
+    public ReadOnlyCollection<DirectStrikeObserver> Observers { get; set; } = [];
     public ReadOnlyCollection<DirectStrikePlayer> Players { get; set; } = [];
 }

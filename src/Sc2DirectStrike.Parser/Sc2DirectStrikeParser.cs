@@ -30,9 +30,53 @@ public static class Sc2DirectStrikeParser
             Duration = replay.Metadata is null ? TimeSpan.Zero : TimeSpan.FromSeconds(replay.Metadata.Duration),
             GameMode = GetGameMode(GetGameModeUpgradeNames(replay), detailsPlayers.Length),
             GameTime = replay.Details.DateTimeUTC,
+            Observers = [.. ParseObservers(replay)],
             TE = replay.Details.Title.EndsWith("TE", StringComparison.OrdinalIgnoreCase),
             Players = [.. detailsPlayers.Select((player, index) => ParseDetailsPlayer(player, GetMetadataPlayer(metadataPlayers, metadataPlayersById, index)))]
         };
+    }
+
+    private static IEnumerable<DirectStrikeObserver> ParseObservers(Sc2Replay replay)
+    {
+        UserInitialData[] userInitialData = [.. replay.Initdata?.UserInitialData ?? []];
+
+        foreach (Slot slot in replay.Initdata?.LobbyState?.Slots ?? [])
+        {
+            if (slot.Observe != 1 || slot.UserId is not { } userId || userId < 0 || userId >= userInitialData.Length)
+            {
+                continue;
+            }
+
+            UserInitialData user = userInitialData[userId];
+            if (string.IsNullOrWhiteSpace(user.Name) || !TryParseToonHandle(slot.ToonHandle, out int region, out int realm, out int id))
+            {
+                continue;
+            }
+
+            yield return new()
+            {
+                Clan = string.IsNullOrWhiteSpace(user.ClanTag) ? null : user.ClanTag,
+                Id = id,
+                Name = user.Name,
+                Realm = realm,
+                Region = region,
+                SlotId = slot.WorkingSetSlotId,
+            };
+        }
+    }
+
+    private static bool TryParseToonHandle(string? toonHandle, out int region, out int realm, out int id)
+    {
+        region = 0;
+        realm = 0;
+        id = 0;
+
+        string[] parts = toonHandle?.Split('-') ?? [];
+        return parts.Length == 4
+            && string.Equals(parts[1], "S2", StringComparison.Ordinal)
+            && int.TryParse(parts[0], out region)
+            && int.TryParse(parts[2], out realm)
+            && int.TryParse(parts[3], out id);
     }
 
     private static HashSet<string> GetGameModeUpgradeNames(Sc2Replay replay)
