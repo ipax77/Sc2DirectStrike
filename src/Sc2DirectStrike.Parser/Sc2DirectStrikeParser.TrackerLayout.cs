@@ -13,9 +13,9 @@ public static partial class Sc2DirectStrikeParser
     private static void SetTrackerData(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts, DirectStrikeReplay directStrikeReplay)
     {
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId = GetPlayerContextsByControlPlayerId(replay, playerContexts);
-        Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts = [];
+        Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts = new(playerContexts.Length);
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag = [];
-        HashSet<int> mappedCommanderControlPlayerIds = [];
+        HashSet<int> mappedCommanderControlPlayerIds = new(playerContexts.Length);
         List<MiddleControlChange> middleControlChanges = [];
         MapLayout mapLayout = new();
 
@@ -157,15 +157,28 @@ public static partial class Sc2DirectStrikeParser
         if (middleControlChanges.Count > 0)
         {
             directStrikeReplay.FirstMiddleControlTeam = middleControlChanges[0].Team;
-            directStrikeReplay.MiddleChanges = [.. middleControlChanges.Select(change => ToTimeSpan(change.Gameloop))];
+            TimeSpan[] middleChanges = new TimeSpan[middleControlChanges.Count];
+            for (int i = 0; i < middleControlChanges.Count; i++)
+            {
+                middleChanges[i] = ToTimeSpan(middleControlChanges[i].Gameloop);
+            }
+
+            directStrikeReplay.MiddleChanges = middleChanges;
         }
 
         foreach (DirectStrikePlayerContext context in playerContexts)
         {
-            context.Player.RefineryTimes = [.. context.Refineries
-                .Where(refinery => refinery.Taken)
-                .OrderBy(refinery => refinery.Gameloop)
-                .Select(refinery => ToTimeSpan(refinery.Gameloop))];
+            context.Refineries.Sort(static (left, right) => left.Gameloop.CompareTo(right.Gameloop));
+            List<TimeSpan> refineryTimes = new(context.Refineries.Count);
+            foreach (DirectStrikePlayerRefinery refinery in context.Refineries)
+            {
+                if (refinery.Taken)
+                {
+                    refineryTimes.Add(ToTimeSpan(refinery.Gameloop));
+                }
+            }
+
+            context.Player.RefineryTimes = [.. refineryTimes];
         }
 
         if (mapLayout.Planetary is { } planetary)
@@ -173,56 +186,50 @@ public static partial class Sc2DirectStrikeParser
             SetGamePositions(playerLayouts, planetary);
         }
 
-        SetPlayerSpawns(replay, playerContextsByControlPlayerId, playerLayouts);
+        SetPlayerSpawns(replay, playerContexts, playerContextsByControlPlayerId, playerLayouts);
     }
 
     private static void SetPlayerSpawns(
         Sc2Replay replay,
+        DirectStrikePlayerContext[] playerContexts,
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
         Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts)
     {
-        Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer = [];
-        Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer = [];
+        Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer = new(playerContexts.Length);
+        Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer = new(playerContexts.Length);
         Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer = GetStagingAreasByPlayer(playerLayouts);
+        ICollection<SUnitBornEvent> unitBornEvents = replay.TrackerEvents?.SUnitBornEvents ?? [];
 
-        foreach (OrderedUnitBornEvent bornEvent in (replay.TrackerEvents?.SUnitBornEvents ?? [])
-            .Select((bornEvent, index) => new OrderedUnitBornEvent(bornEvent, index))
-            .OrderBy(orderedEvent => orderedEvent.Event.Gameloop)
-            .ThenBy(orderedEvent => orderedEvent.Index))
+        if (IsOrderedByGameloop(unitBornEvents))
         {
-            SUnitBornEvent unitBornEvent = bornEvent.Event;
-            if (unitBornEvent.Gameloop == 0
-                || !playerContextsByControlPlayerId.TryGetValue(unitBornEvent.ControlPlayerId, out DirectStrikePlayerContext? context))
+            foreach (SUnitBornEvent unitBornEvent in unitBornEvents)
             {
-                continue;
+                TrackSpawnUnit(unitBornEvent, playerContextsByControlPlayerId, stagingAreasByPlayer, builtUnitNamesByPlayer, spawnUnitsByPlayer);
+            }
+        }
+        else
+        {
+            List<OrderedUnitBornEvent> orderedUnitBornEvents = new(unitBornEvents.Count);
+            int index = 0;
+            foreach (SUnitBornEvent unitBornEvent in unitBornEvents)
+            {
+                orderedUnitBornEvents.Add(new(unitBornEvent, index));
+                index++;
             }
 
-            DirectStrikePlayer player = context.Player;
-            Pos position = new(unitBornEvent.X, unitBornEvent.Y);
-            if (stagingAreasByPlayer.TryGetValue(player, out Polygon? stagingArea)
-                && stagingArea.Contains(position))
+            orderedUnitBornEvents.Sort(static (left, right) =>
             {
-                GetBuiltUnitNames(builtUnitNamesByPlayer, player).Add(unitBornEvent.UnitTypeName);
-            }
+                int gameloopComparison = left.Event.Gameloop.CompareTo(right.Event.Gameloop);
+                return gameloopComparison != 0 ? gameloopComparison : left.Index.CompareTo(right.Index);
+            });
 
-            if (player.TeamId is not (1 or 2)
-                || !MapLayout.IsSpawnUnit(position, player.TeamId)
-                || !builtUnitNamesByPlayer.TryGetValue(player, out HashSet<string>? builtUnitNames)
-                || !builtUnitNames.Contains(unitBornEvent.UnitTypeName))
+            foreach (OrderedUnitBornEvent orderedUnitBornEvent in orderedUnitBornEvents)
             {
-                continue;
+                TrackSpawnUnit(orderedUnitBornEvent.Event, playerContextsByControlPlayerId, stagingAreasByPlayer, builtUnitNamesByPlayer, spawnUnitsByPlayer);
             }
-
-            GetSpawnUnits(spawnUnitsByPlayer, player).Add(new(
-                unitBornEvent.UnitIndex,
-                unitBornEvent.UnitTypeName,
-                unitBornEvent.Gameloop,
-                position,
-                unitBornEvent.SUnitDiedEvent is { } diedEvent ? new(diedEvent.X, diedEvent.Y) : null,
-                unitBornEvent.SUnitDiedEvent?.Gameloop));
         }
 
-        foreach (DirectStrikePlayerContext context in playerContextsByControlPlayerId.Values.Distinct())
+        foreach (DirectStrikePlayerContext context in playerContexts)
         {
             context.Player.Spawns = spawnUnitsByPlayer.TryGetValue(context.Player, out List<TrackedSpawnUnit>? spawnUnits)
                 ? GroupPlayerSpawns(spawnUnits, context.Player.Stats)
@@ -230,12 +237,68 @@ public static partial class Sc2DirectStrikeParser
         }
     }
 
+    private static bool IsOrderedByGameloop(ICollection<SUnitBornEvent> unitBornEvents)
+    {
+        int previousGameloop = 0;
+        bool hasPrevious = false;
+        foreach (SUnitBornEvent unitBornEvent in unitBornEvents)
+        {
+            if (hasPrevious && unitBornEvent.Gameloop < previousGameloop)
+            {
+                return false;
+            }
+
+            previousGameloop = unitBornEvent.Gameloop;
+            hasPrevious = true;
+        }
+
+        return true;
+    }
+
+    private static void TrackSpawnUnit(
+        SUnitBornEvent unitBornEvent,
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
+        Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer,
+        Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer,
+        Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer)
+    {
+        if (unitBornEvent.Gameloop == 0
+            || !playerContextsByControlPlayerId.TryGetValue(unitBornEvent.ControlPlayerId, out DirectStrikePlayerContext? context))
+        {
+            return;
+        }
+
+        DirectStrikePlayer player = context.Player;
+        Pos position = new(unitBornEvent.X, unitBornEvent.Y);
+        if (stagingAreasByPlayer.TryGetValue(player, out Polygon? stagingArea)
+            && stagingArea.Contains(position))
+        {
+            GetBuiltUnitNames(builtUnitNamesByPlayer, player).Add(unitBornEvent.UnitTypeName);
+        }
+
+        if (player.TeamId is not (1 or 2)
+            || !MapLayout.IsSpawnUnit(position, player.TeamId)
+            || !builtUnitNamesByPlayer.TryGetValue(player, out HashSet<string>? builtUnitNames)
+            || !builtUnitNames.Contains(unitBornEvent.UnitTypeName))
+        {
+            return;
+        }
+
+        GetSpawnUnits(spawnUnitsByPlayer, player).Add(new(
+            unitBornEvent.UnitIndex,
+            unitBornEvent.UnitTypeName,
+            unitBornEvent.Gameloop,
+            position,
+            unitBornEvent.SUnitDiedEvent is { } diedEvent ? new(diedEvent.X, diedEvent.Y) : null,
+            unitBornEvent.SUnitDiedEvent?.Gameloop));
+    }
+
     private static void SetPlayerStats(
         Sc2Replay replay,
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
         DirectStrikePlayerContext[] playerContexts)
     {
-        Dictionary<DirectStrikePlayer, List<DirectStrikePlayerStats>> statsByPlayer = [];
+        Dictionary<DirectStrikePlayer, List<DirectStrikePlayerStats>> statsByPlayer = new(playerContexts.Length);
 
         foreach (SPlayerStatsEvent statsEvent in replay.TrackerEvents?.SPlayerStatsEvents ?? [])
         {
@@ -276,8 +339,8 @@ public static partial class Sc2DirectStrikeParser
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
         DirectStrikePlayerContext[] playerContexts)
     {
-        Dictionary<DirectStrikePlayer, List<int>> tierUpgradesByPlayer = [];
-        Dictionary<DirectStrikePlayer, Dictionary<string, int>> upgradesByPlayer = [];
+        Dictionary<DirectStrikePlayer, List<int>> tierUpgradesByPlayer = new(playerContexts.Length);
+        Dictionary<DirectStrikePlayer, Dictionary<string, int>> upgradesByPlayer = new(playerContexts.Length);
 
         foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
         {
@@ -399,7 +462,7 @@ public static partial class Sc2DirectStrikeParser
         int lastUnitGameloop = 0;
         int spawnNumber = 1;
 
-        foreach (TrackedSpawnUnit spawnUnit in spawnUnits.OrderBy(unit => unit.Gameloop))
+        foreach (TrackedSpawnUnit spawnUnit in spawnUnits)
         {
             if (currentSpawnUnits.Count == 0)
             {
@@ -427,28 +490,30 @@ public static partial class Sc2DirectStrikeParser
 
     private static DirectStrikePlayerSpawn CreatePlayerSpawn(int number, int startGameloop, List<TrackedSpawnUnit> spawnUnits, IReadOnlyList<DirectStrikePlayerStats> playerStats)
     {
-        int endGameloop = spawnUnits.Max(unit => unit.Gameloop);
+        int endGameloop = spawnUnits[^1].Gameloop;
+        List<DirectStrikeSpawnUnit> units = new(spawnUnits.Count);
+        foreach (TrackedSpawnUnit unit in spawnUnits)
+        {
+            units.Add(new()
+            {
+                UnitIndex = unit.UnitIndex,
+                Name = unit.Name,
+                Gameloop = unit.Gameloop,
+                X = unit.Position.X,
+                Y = unit.Position.Y,
+                DiedGameloop = unit.DiedGameloop,
+                DiedX = unit.DiedPosition?.X,
+                DiedY = unit.DiedPosition?.Y,
+            });
+        }
+
         return new()
         {
             Number = number,
             StartGameloop = startGameloop,
             EndGameloop = endGameloop,
             SummaryStats = playerStats.FirstOrDefault(stat => stat.Gameloop >= endGameloop),
-            Units = spawnUnits
-                .OrderBy(unit => unit.Gameloop)
-                .Select(unit => new DirectStrikeSpawnUnit()
-                {
-                    UnitIndex = unit.UnitIndex,
-                    Name = unit.Name,
-                    Gameloop = unit.Gameloop,
-                    X = unit.Position.X,
-                    Y = unit.Position.Y,
-                    DiedGameloop = unit.DiedGameloop,
-                    DiedX = unit.DiedPosition?.X,
-                    DiedY = unit.DiedPosition?.Y,
-                })
-                .ToList()
-                .AsReadOnly(),
+            Units = units.AsReadOnly(),
         };
     }
 

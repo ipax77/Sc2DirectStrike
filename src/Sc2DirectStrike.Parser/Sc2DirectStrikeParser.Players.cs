@@ -164,12 +164,37 @@ public static partial class Sc2DirectStrikeParser
         realm = 0;
         id = 0;
 
-        string[] parts = toonHandle?.Split('-') ?? [];
-        return parts.Length == 4
-            && string.Equals(parts[1], "S2", StringComparison.Ordinal)
-            && int.TryParse(parts[0], out region)
-            && int.TryParse(parts[2], out realm)
-            && int.TryParse(parts[3], out id);
+        if (string.IsNullOrEmpty(toonHandle))
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> value = toonHandle.AsSpan();
+        int firstSeparator = value.IndexOf('-');
+        if (firstSeparator <= 0)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> remaining = value[(firstSeparator + 1)..];
+        int secondSeparator = remaining.IndexOf('-');
+        if (secondSeparator <= 0)
+        {
+            return false;
+        }
+
+        ReadOnlySpan<char> type = remaining[..secondSeparator];
+        remaining = remaining[(secondSeparator + 1)..];
+        int thirdSeparator = remaining.IndexOf('-');
+        if (thirdSeparator <= 0 || remaining[(thirdSeparator + 1)..].IndexOf('-') >= 0)
+        {
+            return false;
+        }
+
+        return type.SequenceEqual("S2")
+            && int.TryParse(value[..firstSeparator], out region)
+            && int.TryParse(remaining[..thirdSeparator], out realm)
+            && int.TryParse(remaining[(thirdSeparator + 1)..], out id);
     }
 
     private static bool TryParseWorkerCommander(string unitTypeName, out Commander commander)
