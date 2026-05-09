@@ -3,6 +3,7 @@ namespace Sc2DirectStrike.Parser;
 public sealed class DirectStrikePlayer
 {
     public double APM { get; set; }
+    public int GamePos { get; set; }
     public int TeamId { get; set; }
     public int SlotId { get; set; }
     public Commander Commander { get; set; }

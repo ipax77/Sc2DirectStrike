@@ -152,6 +152,72 @@ public sealed class ParseTests
     }
 
     [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetPlayerTeamsAndGamePositionsFromStagingAreas(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.IsNotNull(replay.Details);
+        Assert.IsTrue(dsReplay.Players.All(player => player.TeamId is 1 or 2));
+        Assert.IsTrue(dsReplay.Players.All(player => player.GamePos is >= 1 and <= 6));
+
+        DetailsPlayer[] detailsPlayers = [.. replay.Details.Players];
+        for (int i = 0; i < dsReplay.Players.Count; i++)
+        {
+            Assert.AreEqual(detailsPlayers[i].WorkingSetSlotId, dsReplay.Players[i].SlotId);
+        }
+
+        if (dsReplay.Players.Count == 6)
+        {
+            CollectionAssert.AreEqual(
+                new[] { 1, 2, 3 },
+                dsReplay.Players.Where(player => player.TeamId == 1).Select(player => player.GamePos).Order().ToArray());
+            CollectionAssert.AreEqual(
+                new[] { 4, 5, 6 },
+                dsReplay.Players.Where(player => player.TeamId == 2).Select(player => player.GamePos).Order().ToArray());
+        }
+    }
+
+    [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetObjectiveTimingsFromTrackerDeaths(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        TimeSpan nexusDeathTime = GetObjectiveDeathTime(replay, "ObjectiveNexus");
+        TimeSpan planetaryDeathTime = GetObjectiveDeathTime(replay, "ObjectivePlanetaryFortress");
+        TimeSpan expectedGameEndTime = nexusDeathTime == TimeSpan.Zero ? planetaryDeathTime : nexusDeathTime;
+        int expectedWinnerTeam = 0;
+        if (nexusDeathTime != TimeSpan.Zero)
+        {
+            expectedWinnerTeam = 1;
+        }
+        else if (planetaryDeathTime != TimeSpan.Zero)
+        {
+            expectedWinnerTeam = 2;
+        }
+
+        Assert.AreEqual(expectedGameEndTime, dsReplay.GameEndTime);
+        Assert.AreEqual(expectedWinnerTeam, dsReplay.WinnerTeam);
+        Assert.AreEqual(GetObjectiveDeathTime(replay, "ObjectivePhotonCannon"), dsReplay.CannonTime);
+        Assert.AreEqual(GetObjectiveDeathTime(replay, "ObjectiveBunker"), dsReplay.BunkerTime);
+    }
+
+    [TestMethod]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task CanMapTeInitdataMetadataAndTrackerCommandersByControlPlayerId(string replayName)
@@ -230,6 +296,12 @@ public sealed class ParseTests
         var dsReplay = Sc2DirectStrikeParser.Parse(replay);
 
         Assert.AreEqual(GameMode.None, dsReplay.GameMode);
+        Assert.AreEqual(0, dsReplay.WinnerTeam);
+        Assert.AreEqual(TimeSpan.Zero, dsReplay.GameEndTime);
+        Assert.AreEqual(TimeSpan.Zero, dsReplay.CannonTime);
+        Assert.AreEqual(TimeSpan.Zero, dsReplay.BunkerTime);
+        Assert.IsTrue(dsReplay.Players.All(player => player.GamePos == 0));
+        Assert.IsTrue(dsReplay.Players.All(player => player.TeamId == 0));
         CollectionAssert.AreEqual(
             new[] { Commander.Zerg, Commander.Protoss, Commander.Protoss, Commander.Zerg, Commander.Terran, Commander.Zerg },
             dsReplay.Players.Select(player => player.Commander).ToArray());
@@ -262,6 +334,17 @@ public sealed class ParseTests
         Assert.IsNotNull(observer);
 
         return observer;
+    }
+
+    private static TimeSpan GetObjectiveDeathTime(Sc2Replay replay, string unitTypeName)
+    {
+        SUnitBornEvent? objective = replay.TrackerEvents?.SUnitBornEvents.SingleOrDefault(unitBornEvent =>
+            unitBornEvent.Gameloop == 0
+            && string.Equals(unitBornEvent.UnitTypeName, unitTypeName, StringComparison.Ordinal));
+
+        return objective?.SUnitDiedEvent is { } diedEvent
+            ? TimeSpan.FromSeconds(diedEvent.Gameloop / 22.4D)
+            : TimeSpan.Zero;
     }
 
     private static bool TryParseAssignedRaceCommander(string assignedRace, out Commander commander)
