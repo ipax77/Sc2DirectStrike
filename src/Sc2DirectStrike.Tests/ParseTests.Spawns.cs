@@ -23,15 +23,17 @@ public sealed partial class ParseTests
         Assert.IsTrue(dsReplay.Players.Any(player => player.Spawns.Count > 0));
         foreach (DirectStrikePlayer player in dsReplay.Players)
         {
-            Assert.IsTrue(player.Spawns.Select(spawn => spawn.Gameloop).SequenceEqual(player.Spawns.Select(spawn => spawn.Gameloop).Order()));
-            foreach (DirectStrikePlayerSpawn spawn in player.Spawns)
+            Assert.IsTrue(player.Spawns.Select(spawn => spawn.StartGameloop).SequenceEqual(player.Spawns.Select(spawn => spawn.StartGameloop).Order()));
+            for (int i = 0; i < player.Spawns.Count; i++)
             {
+                DirectStrikePlayerSpawn spawn = player.Spawns[i];
                 Assert.IsNotEmpty(spawn.Units);
-                Assert.AreEqual(TimeSpan.FromSeconds(spawn.Gameloop / 22.4D), spawn.Time);
-                Assert.IsLessThanOrEqualTo(112, spawn.Units.Max(unit => unit.Gameloop) - spawn.Units.Min(unit => unit.Gameloop));
+                Assert.AreEqual(i + 1, spawn.Number);
+                Assert.AreEqual(spawn.Units.Min(unit => unit.Gameloop), spawn.StartGameloop);
+                Assert.AreEqual(spawn.Units.Max(unit => unit.Gameloop), spawn.EndGameloop);
+                Assert.IsLessThanOrEqualTo(112, spawn.EndGameloop - spawn.StartGameloop);
                 Assert.IsTrue(spawn.Units.Select(unit => unit.Gameloop).SequenceEqual(spawn.Units.Select(unit => unit.Gameloop).Order()));
                 Assert.IsTrue(spawn.Units.All(unit => !string.IsNullOrWhiteSpace(unit.Name)));
-                Assert.IsTrue(spawn.Units.All(unit => unit.Time == TimeSpan.FromSeconds(unit.Gameloop / 22.4D)));
             }
         }
     }
@@ -94,6 +96,7 @@ public sealed partial class ParseTests
                 bornEvent.Gameloop,
                 bornEvent.X,
                 bornEvent.Y,
+                bornEvent.SUnitDiedEvent?.Gameloop,
                 bornEvent.SUnitDiedEvent?.X,
                 bornEvent.SUnitDiedEvent?.Y);
             if (exposedSpawnUnits.Contains(unit))
@@ -173,6 +176,7 @@ public sealed partial class ParseTests
                 unit.Gameloop,
                 unit.X,
                 unit.Y,
+                unit.DiedGameloop,
                 unit.DiedX,
                 unit.DiedY)))];
     }
@@ -245,7 +249,7 @@ public sealed partial class ParseTests
 
     private readonly record struct ExpectedPos(int X, int Y);
 
-    private readonly record struct ExpectedSpawnUnit(int PlayerIndex, int UnitIndex, string Name, int Gameloop, int X, int Y, int? DiedX, int? DiedY);
+    private readonly record struct ExpectedSpawnUnit(int PlayerIndex, int UnitIndex, string Name, int Gameloop, int X, int Y, int? DiedGameloop, int? DiedX, int? DiedY);
 
     private sealed class ExpectedPlayerLayout
     {

@@ -268,6 +268,7 @@ public static partial class Sc2DirectStrikeParser
         List<TrackedSpawnUnit> currentSpawnUnits = [];
         int currentSpawnGameloop = 0;
         int lastUnitGameloop = 0;
+        int spawnNumber = 1;
 
         foreach (TrackedSpawnUnit spawnUnit in spawnUnits.OrderBy(unit => unit.Gameloop))
         {
@@ -277,7 +278,8 @@ public static partial class Sc2DirectStrikeParser
             }
             else if (spawnUnit.Gameloop - lastUnitGameloop > SpawnGroupWindowGameloops)
             {
-                spawns.Add(CreatePlayerSpawn(currentSpawnGameloop, currentSpawnUnits));
+                spawns.Add(CreatePlayerSpawn(spawnNumber, currentSpawnGameloop, currentSpawnUnits));
+                spawnNumber++;
                 currentSpawnUnits = [];
                 currentSpawnGameloop = spawnUnit.Gameloop;
             }
@@ -288,18 +290,19 @@ public static partial class Sc2DirectStrikeParser
 
         if (currentSpawnUnits.Count > 0)
         {
-            spawns.Add(CreatePlayerSpawn(currentSpawnGameloop, currentSpawnUnits));
+            spawns.Add(CreatePlayerSpawn(spawnNumber, currentSpawnGameloop, currentSpawnUnits));
         }
 
         return spawns.AsReadOnly();
     }
 
-    private static DirectStrikePlayerSpawn CreatePlayerSpawn(int gameloop, List<TrackedSpawnUnit> spawnUnits)
+    private static DirectStrikePlayerSpawn CreatePlayerSpawn(int number, int startGameloop, List<TrackedSpawnUnit> spawnUnits)
     {
         return new()
         {
-            Gameloop = gameloop,
-            Time = ToTimeSpan(gameloop),
+            Number = number,
+            StartGameloop = startGameloop,
+            EndGameloop = spawnUnits.Max(unit => unit.Gameloop),
             Units = spawnUnits
                 .OrderBy(unit => unit.Gameloop)
                 .Select(unit => new DirectStrikeSpawnUnit()
@@ -309,10 +312,9 @@ public static partial class Sc2DirectStrikeParser
                     Gameloop = unit.Gameloop,
                     X = unit.Position.X,
                     Y = unit.Position.Y,
-                    Time = ToTimeSpan(unit.Gameloop),
+                    DiedGameloop = unit.DiedGameloop,
                     DiedX = unit.DiedPosition?.X,
                     DiedY = unit.DiedPosition?.Y,
-                    DiedTime = unit.DiedGameloop is { } diedGameloop ? ToTimeSpan(diedGameloop) : null,
                 })
                 .ToList()
                 .AsReadOnly(),
