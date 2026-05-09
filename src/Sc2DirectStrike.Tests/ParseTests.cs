@@ -239,6 +239,8 @@ public sealed partial class ParseTests
         Assert.IsTrue(dsReplay.Players.All(player => player.GamePos == 0));
         Assert.IsTrue(dsReplay.Players.All(player => player.TeamId == 0));
         Assert.IsTrue(dsReplay.Players.All(player => player.RefineryTimes.Length == 0));
+        Assert.IsTrue(dsReplay.Players.All(player => player.TierUpgrades.Length == 0));
+        Assert.IsTrue(dsReplay.Players.All(player => player.Upgrades.Count == 0));
         Assert.IsTrue(dsReplay.Players.All(player => player.Spawns.Count == 0));
         CollectionAssert.AreEqual(
             new[] { Commander.Zerg, Commander.Protoss, Commander.Protoss, Commander.Zerg, Commander.Terran, Commander.Zerg },

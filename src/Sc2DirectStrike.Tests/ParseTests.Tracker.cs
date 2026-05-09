@@ -102,6 +102,35 @@ public sealed partial class ParseTests
     [DataRow("testdata/Direct Strike (10143).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetPlayerUpgradesFromTrackerEvents(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        TimeSpan[][] expectedTierUpgrades = GetExpectedPlayerTierUpgrades(replay, dsReplay);
+        Dictionary<string, TimeSpan>[] expectedUpgrades = GetExpectedPlayerUpgrades(replay, dsReplay);
+        for (int i = 0; i < dsReplay.Players.Count; i++)
+        {
+            DirectStrikePlayer player = dsReplay.Players[i];
+            CollectionAssert.AreEqual(
+                expectedTierUpgrades[i],
+                player.TierUpgrades,
+                $"Unexpected tier upgrades for player index {i}.");
+            AssertDictionariesAreEqual(
+                expectedUpgrades[i],
+                player.Upgrades,
+                $"Unexpected upgrades for player index {i}.");
+        }
+    }
+
+    [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task CanSetMiddleControlFromTrackerOwnerChangeEvents(string replayName)
     {
         Sc2Replay replay = await GetReplay(replayName);
@@ -210,6 +239,70 @@ public sealed partial class ParseTests
                 .Order()
                 .Select(gameloop => TimeSpan.FromSeconds(gameloop / 22.4D))
                 .ToArray())];
+    }
+
+    private static TimeSpan[][] GetExpectedPlayerTierUpgrades(Sc2Replay replay, DirectStrikeReplay dsReplay)
+    {
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        List<int>[] tierUpgradesByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new List<int>())];
+
+        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
+        {
+            if (upgradeEvent.Gameloop == 0
+                || upgradeEvent.UpgradeTypeName is not ("Tier2" or "Tier3")
+                || !playerIndexesByControlPlayerId.TryGetValue(upgradeEvent.PlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            tierUpgradesByPlayer[playerIndex].Add(upgradeEvent.Gameloop);
+        }
+
+        return [.. tierUpgradesByPlayer
+            .Select(gameloops => gameloops
+                .Order()
+                .Select(gameloop => TimeSpan.FromSeconds(gameloop / 22.4D))
+                .ToArray())];
+    }
+
+    private static Dictionary<string, TimeSpan>[] GetExpectedPlayerUpgrades(Sc2Replay replay, DirectStrikeReplay dsReplay)
+    {
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        Dictionary<string, int>[] upgradesByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new Dictionary<string, int>(StringComparer.Ordinal))];
+
+        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
+        {
+            if (upgradeEvent.Gameloop == 0
+                || !playerIndexesByControlPlayerId.TryGetValue(upgradeEvent.PlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            string upgradeName = upgradeEvent.UpgradeTypeName;
+            if (upgradeName is "Tier2" or "Tier3"
+                || IsExpectedFilteredUpgrade(upgradeName)
+                || (upgradeName.Contains("Level", StringComparison.Ordinal) && !IsExpectedNormalizedLevelUpgrade(upgradeName, dsReplay.Players[playerIndex].Commander)))
+            {
+                continue;
+            }
+
+            upgradesByPlayer[playerIndex].TryAdd(upgradeName, upgradeEvent.Gameloop);
+        }
+
+        return [.. upgradesByPlayer.Select(upgrades => upgrades.ToDictionary(
+            pair => pair.Key,
+            pair => TimeSpan.FromSeconds(pair.Value / 22.4D),
+            StringComparer.Ordinal))];
+    }
+
+    private static void AssertDictionariesAreEqual(IReadOnlyDictionary<string, TimeSpan> expected, IReadOnlyDictionary<string, TimeSpan> actual, string message)
+    {
+        Assert.HasCount(expected.Count, actual, message);
+        foreach (KeyValuePair<string, TimeSpan> pair in expected)
+        {
+            Assert.IsTrue(actual.TryGetValue(pair.Key, out TimeSpan actualValue), $"{message} Missing upgrade '{pair.Key}'.");
+            Assert.AreEqual(pair.Value, actualValue, $"{message} Unexpected timing for upgrade '{pair.Key}'.");
+        }
     }
 
     private static ExpectedMiddleControlChange[] GetExpectedMiddleControlChanges(Sc2Replay replay)
@@ -329,6 +422,123 @@ public sealed partial class ParseTests
             || unitTypeName.StartsWith("AssimilatorMinerals", StringComparison.Ordinal)
             || unitTypeName.StartsWith("ExtractorMinerals", StringComparison.Ordinal);
     }
+
+    private static bool IsExpectedFilteredUpgrade(string upgradeName)
+    {
+        if (ExpectedUpgradeExactMatches.Contains(upgradeName))
+        {
+            return true;
+        }
+
+        foreach (string pattern in ExpectedUpgradeStartsWithPatterns)
+        {
+            if (upgradeName.StartsWith(pattern, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        foreach (string pattern in ExpectedUpgradeEndsWithPatterns)
+        {
+            if (upgradeName.EndsWith(pattern, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        foreach (string pattern in ExpectedUpgradeContainsPatterns)
+        {
+            if (upgradeName.Contains(pattern, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsExpectedNormalizedLevelUpgrade(string upgradeName, Commander commander)
+    {
+        Commander normalizedCommander = ExpectedHeroToDefaultRace.GetValueOrDefault(commander, commander);
+        return upgradeName.StartsWith(normalizedCommander.ToString(), StringComparison.Ordinal);
+    }
+
+    private static readonly HashSet<string> ExpectedUpgradeExactMatches = new(StringComparer.Ordinal)
+    {
+        "MineralIncomeBonus",
+        "HighCapacityMode",
+        "HornerMySignificantOtherBuffHan",
+        "HornerMySignificantOtherBuffHorner",
+        "StagingAreaNextSpawn",
+        "MineralIncome",
+        "SpookySkeletonNerf",
+        "NeosteelFrame",
+        "PlayerIsAFK",
+        "DehakaHeroLevel",
+        "DehakaSkillPoint",
+        "DehakaHeroPlaceUsed",
+        "KerriganMutatingCarapaceBonus",
+        "TychusTychusPlaced",
+        "TychusFirstOnesontheHouse",
+        "ClolarionInterdictorsBonus",
+        "PartyFrameHide",
+        "FenixUnlock",
+        "FenixExperienceAwarded",
+        "HideWorkerCommandCard",
+        "UsingVespeneIncapableWorker",
+        "DehakaPrimalWurm",
+    };
+
+    private static readonly string[] ExpectedUpgradeStartsWithPatterns =
+    [
+        "AFKTimer",
+        "Decoration",
+        "Mastery",
+        "Emote",
+        "Tier",
+        "DehakaCreeperHost",
+        "Blacklist",
+        "RaynorCostReduced",
+        "Theme",
+        "Worker",
+        "AreaFlair",
+        "AreaWeather",
+        "Aura",
+        "PowerField",
+    ];
+
+    private static readonly string[] ExpectedUpgradeEndsWithPatterns =
+    [
+        "Disable",
+        "Enable",
+        "Starlight",
+        "Modification",
+        "Bonus",
+        "Bonus10",
+    ];
+
+    private static readonly string[] ExpectedUpgradeContainsPatterns =
+    [
+        "Worker",
+        "PlaceEvolved",
+    ];
+
+    private static readonly Dictionary<Commander, Commander> ExpectedHeroToDefaultRace = new()
+    {
+        { Commander.Zagara, Commander.Zerg },
+        { Commander.Abathur, Commander.Zerg },
+        { Commander.Kerrigan, Commander.Zerg },
+        { Commander.Alarak, Commander.Protoss },
+        { Commander.Artanis, Commander.Protoss },
+        { Commander.Vorazun, Commander.Protoss },
+        { Commander.Fenix, Commander.Protoss },
+        { Commander.Karax, Commander.Protoss },
+        { Commander.Zeratul, Commander.Protoss },
+        { Commander.Raynor, Commander.Terran },
+        { Commander.Swann, Commander.Terran },
+        { Commander.Nova, Commander.Terran },
+        { Commander.Stukov, Commander.Terran },
+    };
 
     private readonly record struct ExpectedMiddleControlChange(TimeSpan Time, int Team);
 

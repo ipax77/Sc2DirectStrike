@@ -18,6 +18,9 @@ public sealed class DirectStrikePlayer
     public string? Clan { get; set; }
     [SuppressMessage("Performance", "CA1819:Properties should not return arrays", Justification = "Refinery timings are intentionally exposed as an array by the parser API contract.")]
     public TimeSpan[] RefineryTimes { get; set; } = [];
+    [SuppressMessage("Performance", "CA1819:Properties should not return arrays", Justification = "Tier upgrade timings are intentionally exposed as an array by the parser API contract.")]
+    public TimeSpan[] TierUpgrades { get; set; } = [];
+    public IReadOnlyDictionary<string, TimeSpan> Upgrades { get; set; } = new ReadOnlyDictionary<string, TimeSpan>(new Dictionary<string, TimeSpan>(StringComparer.Ordinal));
     public int Id { get; set; }
     public int Region { get; set; }
     public int Realm { get; set; }

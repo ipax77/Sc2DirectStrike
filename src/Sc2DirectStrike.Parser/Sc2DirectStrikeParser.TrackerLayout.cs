@@ -128,6 +128,8 @@ public static partial class Sc2DirectStrikeParser
             }
         }
 
+        SetPlayerUpgrades(replay, playerContextsByControlPlayerId, playerContexts);
+
         foreach (SUnitTypeChangeEvent typeChangeEvent in replay.TrackerEvents?.SUnitTypeChangeEvents ?? [])
         {
             if (!IsRefineryMinerals(typeChangeEvent.UnitTypeName)
@@ -269,6 +271,57 @@ public static partial class Sc2DirectStrikeParser
         }
     }
 
+    private static void SetPlayerUpgrades(
+        Sc2Replay replay,
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
+        DirectStrikePlayerContext[] playerContexts)
+    {
+        Dictionary<DirectStrikePlayer, List<int>> tierUpgradesByPlayer = [];
+        Dictionary<DirectStrikePlayer, Dictionary<string, int>> upgradesByPlayer = [];
+
+        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
+        {
+            if (upgradeEvent.Gameloop == 0
+                || !playerContextsByControlPlayerId.TryGetValue(upgradeEvent.PlayerId, out DirectStrikePlayerContext? context))
+            {
+                continue;
+            }
+
+            DirectStrikePlayer player = context.Player;
+            string upgradeName = upgradeEvent.UpgradeTypeName;
+            if (upgradeName is "Tier2" or "Tier3")
+            {
+                GetTierUpgrades(tierUpgradesByPlayer, player).Add(upgradeEvent.Gameloop);
+                continue;
+            }
+
+            if (FilterUpgrades(upgradeName)
+                || (upgradeName.Contains("Level", StringComparison.Ordinal) && !IsNormalizedLevelUpgrade(upgradeName, player.Commander)))
+            {
+                continue;
+            }
+
+            GetPlayerUpgrades(upgradesByPlayer, player).TryAdd(upgradeName, upgradeEvent.Gameloop);
+        }
+
+        foreach (DirectStrikePlayerContext context in playerContexts)
+        {
+            DirectStrikePlayer player = context.Player;
+            if (tierUpgradesByPlayer.TryGetValue(player, out List<int>? tierUpgrades))
+            {
+                player.TierUpgrades = [.. tierUpgrades
+                    .Order()
+                    .Select(ToTimeSpan)];
+            }
+
+            if (upgradesByPlayer.TryGetValue(player, out Dictionary<string, int>? upgrades))
+            {
+                player.Upgrades = new ReadOnlyDictionary<string, TimeSpan>(
+                    upgrades.ToDictionary(pair => pair.Key, pair => ToTimeSpan(pair.Value), StringComparer.Ordinal));
+            }
+        }
+    }
+
     private static Dictionary<DirectStrikePlayer, Polygon> GetStagingAreasByPlayer(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts)
     {
         Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer = [];
@@ -314,6 +367,28 @@ public static partial class Sc2DirectStrikeParser
         }
 
         return stats;
+    }
+
+    private static List<int> GetTierUpgrades(Dictionary<DirectStrikePlayer, List<int>> tierUpgradesByPlayer, DirectStrikePlayer player)
+    {
+        if (!tierUpgradesByPlayer.TryGetValue(player, out List<int>? tierUpgrades))
+        {
+            tierUpgrades = [];
+            tierUpgradesByPlayer.Add(player, tierUpgrades);
+        }
+
+        return tierUpgrades;
+    }
+
+    private static Dictionary<string, int> GetPlayerUpgrades(Dictionary<DirectStrikePlayer, Dictionary<string, int>> upgradesByPlayer, DirectStrikePlayer player)
+    {
+        if (!upgradesByPlayer.TryGetValue(player, out Dictionary<string, int>? upgrades))
+        {
+            upgrades = new(StringComparer.Ordinal);
+            upgradesByPlayer.Add(player, upgrades);
+        }
+
+        return upgrades;
     }
 
     private static ReadOnlyCollection<DirectStrikePlayerSpawn> GroupPlayerSpawns(List<TrackedSpawnUnit> spawnUnits, IReadOnlyList<DirectStrikePlayerStats> playerStats)
@@ -540,6 +615,29 @@ public static partial class Sc2DirectStrikeParser
     {
         return TimeSpan.FromSeconds(gameloop / GameLoopsPerSecond);
     }
+
+    private static bool IsNormalizedLevelUpgrade(string upgradeName, Commander commander)
+    {
+        Commander normalizedCommander = HeroToDefaultRace.GetValueOrDefault(commander, commander);
+        return upgradeName.StartsWith(normalizedCommander.ToString(), StringComparison.Ordinal);
+    }
+
+    private static readonly Dictionary<Commander, Commander> HeroToDefaultRace = new()
+    {
+        { Commander.Zagara, Commander.Zerg },
+        { Commander.Abathur, Commander.Zerg },
+        { Commander.Kerrigan, Commander.Zerg },
+        { Commander.Alarak, Commander.Protoss },
+        { Commander.Artanis, Commander.Protoss },
+        { Commander.Vorazun, Commander.Protoss },
+        { Commander.Fenix, Commander.Protoss },
+        { Commander.Karax, Commander.Protoss },
+        { Commander.Zeratul, Commander.Protoss },
+        { Commander.Raynor, Commander.Terran },
+        { Commander.Swann, Commander.Terran },
+        { Commander.Nova, Commander.Terran },
+        { Commander.Stukov, Commander.Terran },
+    };
 
     private sealed class MapLayout
     {
