@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 using s2protocol.NET;
 using s2protocol.NET.Models;
@@ -7,6 +8,7 @@ namespace Sc2DirectStrike.Parser;
 public static partial class Sc2DirectStrikeParser
 {
     private const double GameLoopsPerSecond = 22.4D;
+    private const int SpawnGroupWindowGameloops = 112;
 
     private static void SetTrackerData(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts, DirectStrikeReplay directStrikeReplay)
     {
@@ -166,6 +168,155 @@ public static partial class Sc2DirectStrikeParser
         {
             SetGamePositions(playerLayouts, planetary);
         }
+
+        SetPlayerSpawns(replay, playerContextsByControlPlayerId, playerLayouts);
+    }
+
+    private static void SetPlayerSpawns(
+        Sc2Replay replay,
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
+        Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts)
+    {
+        Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer = [];
+        Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer = [];
+        Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer = GetStagingAreasByPlayer(playerLayouts);
+
+        foreach (OrderedUnitBornEvent bornEvent in (replay.TrackerEvents?.SUnitBornEvents ?? [])
+            .Select((bornEvent, index) => new OrderedUnitBornEvent(bornEvent, index))
+            .OrderBy(orderedEvent => orderedEvent.Event.Gameloop)
+            .ThenBy(orderedEvent => orderedEvent.Index))
+        {
+            SUnitBornEvent unitBornEvent = bornEvent.Event;
+            if (unitBornEvent.Gameloop == 0
+                || !playerContextsByControlPlayerId.TryGetValue(unitBornEvent.ControlPlayerId, out DirectStrikePlayerContext? context))
+            {
+                continue;
+            }
+
+            DirectStrikePlayer player = context.Player;
+            Pos position = new(unitBornEvent.X, unitBornEvent.Y);
+            if (stagingAreasByPlayer.TryGetValue(player, out Polygon? stagingArea)
+                && stagingArea.Contains(position))
+            {
+                GetBuiltUnitNames(builtUnitNamesByPlayer, player).Add(unitBornEvent.UnitTypeName);
+            }
+
+            if (player.TeamId is not (1 or 2)
+                || !MapLayout.IsSpawnUnit(position, player.TeamId)
+                || !builtUnitNamesByPlayer.TryGetValue(player, out HashSet<string>? builtUnitNames)
+                || !builtUnitNames.Contains(unitBornEvent.UnitTypeName))
+            {
+                continue;
+            }
+
+            GetSpawnUnits(spawnUnitsByPlayer, player).Add(new(
+                unitBornEvent.UnitIndex,
+                unitBornEvent.UnitTypeName,
+                unitBornEvent.Gameloop,
+                position,
+                unitBornEvent.SUnitDiedEvent is { } diedEvent ? new(diedEvent.X, diedEvent.Y) : null,
+                unitBornEvent.SUnitDiedEvent?.Gameloop));
+        }
+
+        foreach (DirectStrikePlayerContext context in playerContextsByControlPlayerId.Values.Distinct())
+        {
+            context.Player.Spawns = spawnUnitsByPlayer.TryGetValue(context.Player, out List<TrackedSpawnUnit>? spawnUnits)
+                ? GroupPlayerSpawns(spawnUnits)
+                : [];
+        }
+    }
+
+    private static Dictionary<DirectStrikePlayer, Polygon> GetStagingAreasByPlayer(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts)
+    {
+        Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer = [];
+        foreach (KeyValuePair<DirectStrikePlayer, PlayerLayout> pair in playerLayouts)
+        {
+            if (pair.Value.TryGetStagingArea(out Polygon? stagingArea))
+            {
+                stagingAreasByPlayer.Add(pair.Key, stagingArea);
+            }
+        }
+
+        return stagingAreasByPlayer;
+    }
+
+    private static HashSet<string> GetBuiltUnitNames(Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer, DirectStrikePlayer player)
+    {
+        if (!builtUnitNamesByPlayer.TryGetValue(player, out HashSet<string>? builtUnitNames))
+        {
+            builtUnitNames = new(StringComparer.Ordinal);
+            builtUnitNamesByPlayer.Add(player, builtUnitNames);
+        }
+
+        return builtUnitNames;
+    }
+
+    private static List<TrackedSpawnUnit> GetSpawnUnits(Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer, DirectStrikePlayer player)
+    {
+        if (!spawnUnitsByPlayer.TryGetValue(player, out List<TrackedSpawnUnit>? spawnUnits))
+        {
+            spawnUnits = [];
+            spawnUnitsByPlayer.Add(player, spawnUnits);
+        }
+
+        return spawnUnits;
+    }
+
+    private static ReadOnlyCollection<DirectStrikePlayerSpawn> GroupPlayerSpawns(List<TrackedSpawnUnit> spawnUnits)
+    {
+        List<DirectStrikePlayerSpawn> spawns = [];
+        List<TrackedSpawnUnit> currentSpawnUnits = [];
+        int currentSpawnGameloop = 0;
+        int lastUnitGameloop = 0;
+
+        foreach (TrackedSpawnUnit spawnUnit in spawnUnits.OrderBy(unit => unit.Gameloop))
+        {
+            if (currentSpawnUnits.Count == 0)
+            {
+                currentSpawnGameloop = spawnUnit.Gameloop;
+            }
+            else if (spawnUnit.Gameloop - lastUnitGameloop > SpawnGroupWindowGameloops)
+            {
+                spawns.Add(CreatePlayerSpawn(currentSpawnGameloop, currentSpawnUnits));
+                currentSpawnUnits = [];
+                currentSpawnGameloop = spawnUnit.Gameloop;
+            }
+
+            currentSpawnUnits.Add(spawnUnit);
+            lastUnitGameloop = spawnUnit.Gameloop;
+        }
+
+        if (currentSpawnUnits.Count > 0)
+        {
+            spawns.Add(CreatePlayerSpawn(currentSpawnGameloop, currentSpawnUnits));
+        }
+
+        return spawns.AsReadOnly();
+    }
+
+    private static DirectStrikePlayerSpawn CreatePlayerSpawn(int gameloop, List<TrackedSpawnUnit> spawnUnits)
+    {
+        return new()
+        {
+            Gameloop = gameloop,
+            Time = ToTimeSpan(gameloop),
+            Units = spawnUnits
+                .OrderBy(unit => unit.Gameloop)
+                .Select(unit => new DirectStrikeSpawnUnit()
+                {
+                    UnitIndex = unit.UnitIndex,
+                    Name = unit.Name,
+                    Gameloop = unit.Gameloop,
+                    X = unit.Position.X,
+                    Y = unit.Position.Y,
+                    Time = ToTimeSpan(unit.Gameloop),
+                    DiedX = unit.DiedPosition?.X,
+                    DiedY = unit.DiedPosition?.Y,
+                    DiedTime = unit.DiedGameloop is { } diedGameloop ? ToTimeSpan(diedGameloop) : null,
+                })
+                .ToList()
+                .AsReadOnly(),
+        };
     }
 
     private static bool TryGetPlayerLayout(
@@ -334,10 +485,23 @@ public static partial class Sc2DirectStrikeParser
 
     private sealed class MapLayout
     {
+        private static readonly Polygon Team1SpawnArea = new(new(165, 174), new(182, 157), new(171, 146), new(154, 163));
+        private static readonly Polygon Team2SpawnArea = new(new(84, 93), new(101, 76), new(90, 65), new(73, 82));
+
         public Pos? Bunker { get; set; }
         public Pos? Cannon { get; set; }
         public Pos? Nexus { get; set; }
         public Pos? Planetary { get; set; }
+
+        public static bool IsSpawnUnit(Pos position, int teamId)
+        {
+            return teamId switch
+            {
+                1 => Team1SpawnArea.Contains(position),
+                2 => Team2SpawnArea.Contains(position),
+                _ => false,
+            };
+        }
     }
 
     private sealed class PlayerLayout
@@ -346,11 +510,68 @@ public static partial class Sc2DirectStrikeParser
         public Pos? North { get; set; }
         public Pos? South { get; set; }
         public Pos? West { get; set; }
+
+        public bool TryGetStagingArea([NotNullWhen(true)] out Polygon? stagingArea)
+        {
+            if (South is { } south && East is { } east && North is { } north && West is { } west)
+            {
+                stagingArea = new(south, east, north, west);
+                return true;
+            }
+
+            stagingArea = null;
+            return false;
+        }
+    }
+
+    private sealed class Polygon(params Pos[] points)
+    {
+        public bool Contains(Pos position)
+        {
+            bool inside = false;
+            for (int i = 0, j = points.Length - 1; i < points.Length; j = i++)
+            {
+                Pos pi = points[i];
+                Pos pj = points[j];
+                if (IsOnSegment(pj, pi, position))
+                {
+                    return true;
+                }
+
+                bool intersects = (pi.Y > position.Y) != (pj.Y > position.Y)
+                    && position.X < ((double)(pj.X - pi.X) * (position.Y - pi.Y) / (pj.Y - pi.Y)) + pi.X;
+                if (intersects)
+                {
+                    inside = !inside;
+                }
+            }
+
+            return inside;
+        }
+
+        private static bool IsOnSegment(Pos start, Pos end, Pos position)
+        {
+            long crossProduct = ((long)position.Y - start.Y) * (end.X - start.X)
+                - ((long)position.X - start.X) * (end.Y - start.Y);
+            if (crossProduct != 0)
+            {
+                return false;
+            }
+
+            return position.X >= Math.Min(start.X, end.X)
+                && position.X <= Math.Max(start.X, end.X)
+                && position.Y >= Math.Min(start.Y, end.Y)
+                && position.Y <= Math.Max(start.Y, end.Y);
+        }
     }
 
     private readonly record struct PlayerLayoutEntry(DirectStrikePlayer Player, PlayerLayout Layout);
 
     private readonly record struct MiddleControlChange(int Gameloop, int Team);
+
+    private readonly record struct OrderedUnitBornEvent(SUnitBornEvent Event, int Index);
+
+    private readonly record struct TrackedSpawnUnit(int UnitIndex, string Name, int Gameloop, Pos Position, Pos? DiedPosition, int? DiedGameloop);
 
     private readonly record struct Pos(int X, int Y);
 }

@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.Diagnostics.CodeAnalysis;
 
 namespace Sc2DirectStrike.Parser;
@@ -18,4 +19,5 @@ public sealed class DirectStrikePlayer
     public int Id { get; set; }
     public int Region { get; set; }
     public int Realm { get; set; }
+    public ReadOnlyCollection<DirectStrikePlayerSpawn> Spawns { get; set; } = [];
 }
