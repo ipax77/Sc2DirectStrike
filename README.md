@@ -1,8 +1,6 @@
-
 # SC2 Direct Strike Replay Parser
 
-Extracts relevant information from decoded StarCraft II replays that match the
-Direct Strike custom map setup.
+Extracts Direct Strike-specific data from decoded StarCraft II replay files.
 
 ## Agent Notes
 
@@ -10,37 +8,57 @@ Use this file as the lightweight project briefing before making changes.
 
 ## Project Layout
 
-- `src/src.slnx` - solution file.
+- `src/src.slnx` - solution file containing all projects.
 - `src/Sc2DirectStrike.Parser` - parser library.
 - `src/Sc2DirectStrike.Tests` - MSTest test project with replay fixtures.
-- `src/Sc2DirectStrike.Tests/testdata` - sample `.SC2Replay` files used by tests.
+- `src/Sc2DirectStrike.Tests/testdata` - sample `.SC2Replay` files used by tests and benchmarks.
+- `src/Sc2DirectStrike.Benchmarks` - BenchmarkDotNet project for parser replay benchmarks.
 
-## Tech Stack
+## Setup
 
-- .NET SDK/runtime target: `net10.0`.
-- Language version: `latest`.
-- Nullable reference types and implicit usings are enabled.
-- Parser dependency: `s2protocol.NET` `0.9.1.1`.
-- Test framework: MSTest `4.0.2`.
-
-The parser project has analyzers enabled, treats warnings as errors, and treats
-nullable warnings as errors. Keep edits warning-clean.
-
-## Common Commands
+Install the .NET 10 SDK. This workspace currently uses SDK `10.0.203`, and all
+projects target `net10.0`.
 
 From the repository root:
 
 ```powershell
+dotnet restore src\src.slnx
 dotnet build src\src.slnx
 dotnet test src\Sc2DirectStrike.Tests\Sc2DirectStrike.Tests.csproj
 ```
 
-The current baseline is 13 passing tests.
+The verified baseline is 85 tests total: 81 passing and 4 skipped.
 
-In the Codex sandbox, `dotnet test` may fail while reading the user-level
-NuGet config at `C:\Users\pax77\AppData\Roaming\NuGet\NuGet.Config`. If that
-happens, rerun the same command with escalated permissions so restore/test can
-read the local NuGet configuration.
+Stress replay tests are skipped by default. Run them explicitly with:
+
+```powershell
+$env:SC2DIRECTSTRIKE_RUN_STRESS_TESTS = "1"
+dotnet test src\Sc2DirectStrike.Tests\Sc2DirectStrike.Tests.csproj --filter TestCategory=Stress
+```
+
+Run parser benchmarks with:
+
+```powershell
+dotnet run -c Release --project src\Sc2DirectStrike.Benchmarks\Sc2DirectStrike.Benchmarks.csproj
+```
+
+In the Codex sandbox, `dotnet restore`, `dotnet build`, or `dotnet test` may
+fail while reading the user-level NuGet config at
+`C:\Users\pax77\AppData\Roaming\NuGet\NuGet.Config`. If that happens, rerun
+the same command with escalated permissions so NuGet can read the local
+configuration.
+
+## Tech Stack
+
+- Target framework: `net10.0`.
+- Language version: `latest`.
+- Nullable reference types and implicit usings are enabled.
+- Parser dependency: `s2protocol.NET` `0.9.1.1`.
+- Test framework: MSTest `4.0.2`.
+- Benchmark framework: BenchmarkDotNet `0.15.8`.
+
+The parser project has analyzers enabled, treats build warnings as errors, and
+treats nullable warnings as errors. Keep edits warning-clean.
 
 ## Parser Behavior
 
@@ -51,24 +69,25 @@ Current behavior:
 - Requires a non-null replay and replay details.
 - Accepts replay titles that start with `Direct Strike`, case-insensitively.
 - Throws `InvalidOperationException` for non-Direct Strike replay titles.
-- Sets `GameTime` from `replay.Details.DateTimeUTC`.
-- Sets `TE` when the replay title ends with `TE`, case-insensitively.
-- Sets `BaseBuild` and `Duration` from replay metadata when available.
-- Parses players from replay details into `DirectStrikePlayer` records.
-- Maps player race text to the `Commander` enum when possible.
-- Maps metadata APM, result, and selected race onto players when available.
-- Matches metadata players by 1-based `PlayerID` as details-list index, then
-  falls back to same-order matching.
-
-Some model fields exist but are not populated yet, including `GameMode`,
-`WinnerTeam`, and player `TeamId`.
+- Sets `GameTime` from replay details, `TE` from the replay title, and
+  `BaseBuild` plus replay `Duration` from replay metadata.
+- Parses game mode from gameloop-zero mode and mutation upgrade events.
+- Parses players from replay details and metadata.
+- Parses observers from lobby/init data.
+- Maps player identity, clan, toon, slot, APM, result, selected race, commander,
+  team, and game position when the replay contains the needed data.
+- Uses tracker events to populate player stats, refinery times, tier upgrades,
+  filtered upgrade timings, middle control changes, objective timings, winner
+  team, and grouped spawn units.
+- Matches metadata and tracker players by player id, toon, slot, or details-list
+  fallback depending on the available replay data.
 
 ## Testing Notes
 
 The test project copies everything under `testdata` to the output directory.
-Existing tests decode each replay fixture with `s2protocol.NET`, call
-`Sc2DirectStrikeParser.Parse`, and verify that game time and player data are
-present.
+Existing tests decode replay fixtures with `s2protocol.NET`, call
+`Sc2DirectStrikeParser.Parse`, and verify replay, player, tracker, upgrade,
+layout, and spawn behavior.
 
 When extending parsing behavior, prefer adding or updating fixture-backed tests
-in `ParseTests.cs`.
+in `ParseTests.cs`, `ParseTests.Tracker.cs`, or `ParseTests.Spawns.cs`.
