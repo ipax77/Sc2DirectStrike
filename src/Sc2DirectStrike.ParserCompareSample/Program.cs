@@ -174,7 +174,8 @@ public static class Program
                     .Select(static path => new FileInfo(path))
                     .Where(file => file.Length <= maxReplaySizeBytes)
                     .OrderByDescending(static file => file.Name, StringComparer.OrdinalIgnoreCase)
-                    .Take(1),
+                    .Skip(200)
+                    .Take(100),
             ];
             return true;
         }
