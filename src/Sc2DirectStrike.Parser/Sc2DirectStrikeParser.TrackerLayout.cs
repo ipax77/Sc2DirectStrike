@@ -329,9 +329,15 @@ public static partial class Sc2DirectStrikeParser
         foreach (DirectStrikePlayerContext context in playerContexts)
         {
             context.Player.Stats = statsByPlayer.TryGetValue(context.Player, out List<DirectStrikePlayerStats>? stats)
-                ? stats.OrderBy(stat => stat.Gameloop).ToList().AsReadOnly()
+                ? SortStats(stats)
                 : [];
         }
+    }
+
+    private static ReadOnlyCollection<DirectStrikePlayerStats> SortStats(List<DirectStrikePlayerStats> stats)
+    {
+        stats.Sort(static (left, right) => left.Gameloop.CompareTo(right.Gameloop));
+        return stats.AsReadOnly();
     }
 
     private static void SetPlayerUpgrades(
@@ -372,22 +378,32 @@ public static partial class Sc2DirectStrikeParser
             DirectStrikePlayer player = context.Player;
             if (tierUpgradesByPlayer.TryGetValue(player, out List<int>? tierUpgrades))
             {
-                player.TierUpgrades = [.. tierUpgrades
-                    .Order()
-                    .Select(ToTimeSpan)];
+                tierUpgrades.Sort();
+                TimeSpan[] tierUpgradeTimes = new TimeSpan[tierUpgrades.Count];
+                for (int i = 0; i < tierUpgrades.Count; i++)
+                {
+                    tierUpgradeTimes[i] = ToTimeSpan(tierUpgrades[i]);
+                }
+
+                player.TierUpgrades = tierUpgradeTimes;
             }
 
             if (upgradesByPlayer.TryGetValue(player, out Dictionary<string, int>? upgrades))
             {
-                player.Upgrades = new ReadOnlyDictionary<string, TimeSpan>(
-                    upgrades.ToDictionary(pair => pair.Key, pair => ToTimeSpan(pair.Value), StringComparer.Ordinal));
+                Dictionary<string, TimeSpan> upgradeTimes = new(upgrades.Count, StringComparer.Ordinal);
+                foreach (KeyValuePair<string, int> pair in upgrades)
+                {
+                    upgradeTimes.Add(pair.Key, ToTimeSpan(pair.Value));
+                }
+
+                player.Upgrades = new ReadOnlyDictionary<string, TimeSpan>(upgradeTimes);
             }
         }
     }
 
     private static Dictionary<DirectStrikePlayer, Polygon> GetStagingAreasByPlayer(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts)
     {
-        Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer = [];
+        Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer = new(playerLayouts.Count);
         foreach (KeyValuePair<DirectStrikePlayer, PlayerLayout> pair in playerLayouts)
         {
             if (pair.Value.TryGetStagingArea(out Polygon? stagingArea))
@@ -512,9 +528,22 @@ public static partial class Sc2DirectStrikeParser
             Number = number,
             StartGameloop = startGameloop,
             EndGameloop = endGameloop,
-            SummaryStats = playerStats.FirstOrDefault(stat => stat.Gameloop >= endGameloop),
+            SummaryStats = GetSummaryStats(playerStats, endGameloop),
             Units = units.AsReadOnly(),
         };
+    }
+
+    private static DirectStrikePlayerStats? GetSummaryStats(IReadOnlyList<DirectStrikePlayerStats> playerStats, int endGameloop)
+    {
+        foreach (DirectStrikePlayerStats stat in playerStats)
+        {
+            if (stat.Gameloop >= endGameloop)
+            {
+                return stat;
+            }
+        }
+
+        return null;
     }
 
     private static bool TryGetPlayerLayout(
@@ -562,8 +591,8 @@ public static partial class Sc2DirectStrikeParser
 
     private static void SetGamePositions(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts, Pos planetary)
     {
-        List<PlayerLayoutEntry> playersTeam1 = [.. GetLayoutEntries(playerLayouts, 1)];
-        List<PlayerLayoutEntry> playersTeam2 = [.. GetLayoutEntries(playerLayouts, 2)];
+        List<PlayerLayoutEntry> playersTeam1 = GetLayoutEntries(playerLayouts, 1);
+        List<PlayerLayoutEntry> playersTeam2 = GetLayoutEntries(playerLayouts, 2);
 
         SetTeamGamePositions(playersTeam1, planetary);
         SetTeamGamePositions(playersTeam2, planetary);
@@ -577,15 +606,18 @@ public static partial class Sc2DirectStrikeParser
         }
     }
 
-    private static IEnumerable<PlayerLayoutEntry> GetLayoutEntries(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts, int teamId)
+    private static List<PlayerLayoutEntry> GetLayoutEntries(Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts, int teamId)
     {
+        List<PlayerLayoutEntry> entries = new(3);
         foreach (KeyValuePair<DirectStrikePlayer, PlayerLayout> pair in playerLayouts)
         {
             if (pair.Key.TeamId == teamId)
             {
-                yield return new(pair.Key, pair.Value);
+                entries.Add(new(pair.Key, pair.Value));
             }
         }
+
+        return entries;
     }
 
     private static void SetTeamGamePositions(List<PlayerLayoutEntry> teamPlayers, Pos planetary)
@@ -628,18 +660,52 @@ public static partial class Sc2DirectStrikeParser
 
     private static void SetThreePlayerTeamPositions(List<PlayerLayoutEntry> teamPlayers, Pos planetary)
     {
-        List<PlayerLayoutEntry> playersWithSouth = [.. teamPlayers.Where(player => player.Layout.South.HasValue)];
+        List<PlayerLayoutEntry> playersWithSouth = new(3);
+        foreach (PlayerLayoutEntry player in teamPlayers)
+        {
+            if (player.Layout.South.HasValue)
+            {
+                playersWithSouth.Add(player);
+            }
+        }
+
         if (playersWithSouth.Count != 3)
         {
             return;
         }
 
-        PlayerLayoutEntry middlePlayer = playersWithSouth
-            .OrderBy(player => DistanceSquared(planetary, player.Layout.South!.Value))
-            .First();
-        PlayerLayoutEntry[] sidePlayers = [.. playersWithSouth.Where(player => !ReferenceEquals(player.Player, middlePlayer.Player))];
+        PlayerLayoutEntry middlePlayer = playersWithSouth[0];
+        double middleDistance = DistanceSquared(planetary, middlePlayer.Layout.South!.Value);
+        for (int i = 1; i < playersWithSouth.Count; i++)
+        {
+            double distance = DistanceSquared(planetary, playersWithSouth[i].Layout.South!.Value);
+            if (distance < middleDistance)
+            {
+                middlePlayer = playersWithSouth[i];
+                middleDistance = distance;
+            }
+        }
 
-        SetThreePlayerSidePositions(middlePlayer, sidePlayers[0], sidePlayers[1]);
+        PlayerLayoutEntry sidePlayer1 = default;
+        PlayerLayoutEntry sidePlayer2 = default;
+        bool hasSidePlayer1 = false;
+        foreach (PlayerLayoutEntry player in playersWithSouth)
+        {
+            if (!ReferenceEquals(player.Player, middlePlayer.Player))
+            {
+                if (hasSidePlayer1)
+                {
+                    sidePlayer2 = player;
+                }
+                else
+                {
+                    sidePlayer1 = player;
+                    hasSidePlayer1 = true;
+                }
+            }
+        }
+
+        SetThreePlayerSidePositions(middlePlayer, sidePlayer1, sidePlayer2);
     }
 
     private static void SetThreePlayerSidePositions(PlayerLayoutEntry middlePlayer, PlayerLayoutEntry player1, PlayerLayoutEntry player2)
@@ -683,26 +749,30 @@ public static partial class Sc2DirectStrikeParser
 
     private static bool IsNormalizedLevelUpgrade(string upgradeName, Commander commander)
     {
-        Commander normalizedCommander = HeroToDefaultRace.GetValueOrDefault(commander, commander);
-        return upgradeName.StartsWith(normalizedCommander.ToString(), StringComparison.Ordinal);
+        string? normalizedCommanderPrefix = GetNormalizedCommanderPrefix(commander);
+        return normalizedCommanderPrefix is not null && upgradeName.StartsWith(normalizedCommanderPrefix, StringComparison.Ordinal);
     }
 
-    private static readonly Dictionary<Commander, Commander> HeroToDefaultRace = new()
+    private static string? GetNormalizedCommanderPrefix(Commander commander)
     {
-        { Commander.Zagara, Commander.Zerg },
-        { Commander.Abathur, Commander.Zerg },
-        { Commander.Kerrigan, Commander.Zerg },
-        { Commander.Alarak, Commander.Protoss },
-        { Commander.Artanis, Commander.Protoss },
-        { Commander.Vorazun, Commander.Protoss },
-        { Commander.Fenix, Commander.Protoss },
-        { Commander.Karax, Commander.Protoss },
-        { Commander.Zeratul, Commander.Protoss },
-        { Commander.Raynor, Commander.Terran },
-        { Commander.Swann, Commander.Terran },
-        { Commander.Nova, Commander.Terran },
-        { Commander.Stukov, Commander.Terran },
-    };
+        return commander switch
+        {
+            Commander.Zagara or Commander.Abathur or Commander.Kerrigan => nameof(Commander.Zerg),
+            Commander.Alarak or Commander.Artanis or Commander.Vorazun or Commander.Fenix or Commander.Karax or Commander.Zeratul => nameof(Commander.Protoss),
+            Commander.Raynor or Commander.Swann or Commander.Nova or Commander.Stukov => nameof(Commander.Terran),
+            Commander.None => nameof(Commander.None),
+            Commander.Protoss => nameof(Commander.Protoss),
+            Commander.Terran => nameof(Commander.Terran),
+            Commander.Zerg => nameof(Commander.Zerg),
+            Commander.Dehaka => nameof(Commander.Dehaka),
+            Commander.Horner => nameof(Commander.Horner),
+            Commander.Mengsk => nameof(Commander.Mengsk),
+            Commander.Stetmann => nameof(Commander.Stetmann),
+            Commander.Tychus => nameof(Commander.Tychus),
+            Commander.Random => nameof(Commander.Random),
+            _ => null,
+        };
+    }
 
     private sealed class MapLayout
     {

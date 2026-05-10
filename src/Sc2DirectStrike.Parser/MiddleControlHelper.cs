@@ -12,9 +12,17 @@ public sealed class MiddleControlHelper
 
         duration = replay.Duration < TimeSpan.Zero ? TimeSpan.Zero : replay.Duration;
         firstTeam = replay.FirstTeamCrossedMiddle;
-        changes = [.. replay.MiddleChanges
-            .Where(change => change >= TimeSpan.Zero)
-            .Order()];
+        List<TimeSpan> nonNegativeChanges = new(replay.MiddleChanges.Count);
+        foreach (TimeSpan change in replay.MiddleChanges)
+        {
+            if (change >= TimeSpan.Zero)
+            {
+                nonNegativeChanges.Add(change);
+            }
+        }
+
+        nonNegativeChanges.Sort();
+        changes = [.. nonNegativeChanges];
     }
 
     public (TimeSpan Team1, TimeSpan Team2) GetControl(TimeSpan atTime)

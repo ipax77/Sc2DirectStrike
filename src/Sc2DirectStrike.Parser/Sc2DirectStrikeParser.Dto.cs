@@ -1,4 +1,4 @@
-using System.Reflection;
+using System.Collections.ObjectModel;
 using s2protocol.NET;
 using s2protocol.NET.Models;
 
@@ -21,6 +21,11 @@ public static partial class Sc2DirectStrikeParser
 
         DirectStrikeReplay directStrikeReplay = Parse(replay);
         Dictionary<DirectStrikePlayer, MessageCounts> messageCountsByPlayer = GetMessageCountsByPlayer(replay, directStrikeReplay);
+        List<ReplayPlayerDto> players = new(directStrikeReplay.Players.Count);
+        foreach (DirectStrikePlayer player in directStrikeReplay.Players)
+        {
+            players.Add(CreatePlayerDto(player, messageCountsByPlayer.GetValueOrDefault(player)));
+        }
 
         return new()
         {
@@ -29,7 +34,7 @@ public static partial class Sc2DirectStrikeParser
             Title = replay.Details?.Title ?? replay.Metadata?.Title ?? string.Empty,
             Version = GetReplayVersion(replay),
             GameMode = directStrikeReplay.GameMode,
-            RegionId = directStrikeReplay.Players.Select(player => player.Region).FirstOrDefault(region => region != 0),
+            RegionId = GetRegionId(directStrikeReplay),
             Gametime = directStrikeReplay.GameTime,
             BaseBuild = ParseBaseBuild(directStrikeReplay.BaseBuild, replay),
             Duration = directStrikeReplay.Duration,
@@ -38,7 +43,7 @@ public static partial class Sc2DirectStrikeParser
             WinnerTeam = directStrikeReplay.WinnerTeam,
             FirstTeamCrossedMiddle = directStrikeReplay.FirstMiddleControlTeam,
             MiddleChanges = directStrikeReplay.MiddleChanges,
-            Players = [.. directStrikeReplay.Players.Select(player => CreatePlayerDto(player, messageCountsByPlayer.GetValueOrDefault(player)))],
+            Players = players,
         };
     }
 
@@ -61,15 +66,8 @@ public static partial class Sc2DirectStrikeParser
             Messages = messageCounts.Messages,
             Pings = messageCounts.Pings,
             IsMvp = false,
-            Spawns = [.. GetBreakpointSpawns(player).Select(spawn => CreateSpawnDto(spawn.Breakpoint, spawn.Spawn, player, armyValuesBySpawn, incomesBySpawn))],
-            Upgrades = [.. player.Upgrades
-                .OrderBy(pair => pair.Value)
-                .ThenBy(pair => pair.Key, StringComparer.Ordinal)
-                .Select(pair => new UpgradeDto
-                {
-                    Name = pair.Key,
-                    Time = pair.Value,
-                })],
+            Spawns = CreateSpawnDtos(player, armyValuesBySpawn, incomesBySpawn),
+            Upgrades = CreateUpgradeDtos(player),
             TierUpgrades = player.TierUpgrades,
             Refineries = player.RefineryTimes,
             Player = new()
@@ -86,14 +84,31 @@ public static partial class Sc2DirectStrikeParser
         };
     }
 
-    private static IEnumerable<SelectedBreakpointSpawn> GetBreakpointSpawns(DirectStrikePlayer player)
+    private static int GetRegionId(DirectStrikeReplay directStrikeReplay)
     {
-        DirectStrikePlayerSpawn[] statsBackedSpawns = [.. player.Spawns.Where(spawn => spawn.SummaryStats is not null)];
-        if (statsBackedSpawns.Length == 0)
+        foreach (DirectStrikePlayer player in directStrikeReplay.Players)
         {
-            yield break;
+            if (player.Region != 0)
+            {
+                return player.Region;
+            }
         }
 
+        return 0;
+    }
+
+    private static List<SpawnDto> CreateSpawnDtos(
+        DirectStrikePlayer player,
+        IReadOnlyDictionary<DirectStrikePlayerSpawn, int> armyValuesBySpawn,
+        IReadOnlyDictionary<DirectStrikePlayerSpawn, int> incomesBySpawn)
+    {
+        List<DirectStrikePlayerSpawn> statsBackedSpawns = GetStatsBackedSpawns(player);
+        if (statsBackedSpawns.Count == 0)
+        {
+            return [];
+        }
+
+        List<SpawnDto> spawns = new(BreakpointDefinitions.Length + 1);
         foreach (BreakpointDefinition breakpoint in BreakpointDefinitions)
         {
             if (player.DurationGameloop > 0 && breakpoint.Gameloop > player.DurationGameloop)
@@ -101,17 +116,72 @@ public static partial class Sc2DirectStrikeParser
                 continue;
             }
 
-            DirectStrikePlayerSpawn? spawn = statsBackedSpawns
-                .OrderBy(spawn => Math.Abs(spawn.EndGameloop - breakpoint.Gameloop))
-                .ThenBy(spawn => spawn.EndGameloop)
-                .FirstOrDefault();
-            if (spawn is not null)
+            DirectStrikePlayerSpawn spawn = FindClosestBreakpointSpawn(statsBackedSpawns, breakpoint.Gameloop);
+            spawns.Add(CreateSpawnDto(breakpoint.Breakpoint, spawn, player, armyValuesBySpawn, incomesBySpawn));
+        }
+
+        spawns.Add(CreateSpawnDto(Breakpoint.All, statsBackedSpawns[^1], player, armyValuesBySpawn, incomesBySpawn));
+        return spawns;
+    }
+
+    private static List<DirectStrikePlayerSpawn> GetStatsBackedSpawns(DirectStrikePlayer player)
+    {
+        List<DirectStrikePlayerSpawn> statsBackedSpawns = new(player.Spawns.Count);
+        foreach (DirectStrikePlayerSpawn spawn in player.Spawns)
+        {
+            if (spawn.SummaryStats is not null)
             {
-                yield return new(breakpoint.Breakpoint, spawn);
+                statsBackedSpawns.Add(spawn);
             }
         }
 
-        yield return new(Breakpoint.All, statsBackedSpawns[^1]);
+        return statsBackedSpawns;
+    }
+
+    private static DirectStrikePlayerSpawn FindClosestBreakpointSpawn(List<DirectStrikePlayerSpawn> spawns, int targetGameloop)
+    {
+        DirectStrikePlayerSpawn bestSpawn = spawns[0];
+        int bestDistance = Math.Abs(bestSpawn.EndGameloop - targetGameloop);
+
+        for (int i = 1; i < spawns.Count; i++)
+        {
+            DirectStrikePlayerSpawn spawn = spawns[i];
+            int distance = Math.Abs(spawn.EndGameloop - targetGameloop);
+            if (distance < bestDistance || (distance == bestDistance && spawn.EndGameloop < bestSpawn.EndGameloop))
+            {
+                bestSpawn = spawn;
+                bestDistance = distance;
+            }
+        }
+
+        return bestSpawn;
+    }
+
+    private static List<UpgradeDto> CreateUpgradeDtos(DirectStrikePlayer player)
+    {
+        List<KeyValuePair<string, TimeSpan>> upgrades = new(player.Upgrades.Count);
+        foreach (KeyValuePair<string, TimeSpan> upgrade in player.Upgrades)
+        {
+            upgrades.Add(upgrade);
+        }
+
+        upgrades.Sort(static (left, right) =>
+        {
+            int timeComparison = left.Value.CompareTo(right.Value);
+            return timeComparison != 0 ? timeComparison : string.Compare(left.Key, right.Key, StringComparison.Ordinal);
+        });
+
+        List<UpgradeDto> upgradeDtos = new(upgrades.Count);
+        foreach (KeyValuePair<string, TimeSpan> upgrade in upgrades)
+        {
+            upgradeDtos.Add(new()
+            {
+                Name = upgrade.Key,
+                Time = upgrade.Value,
+            });
+        }
+
+        return upgradeDtos;
     }
 
     private static SpawnDto CreateSpawnDto(
@@ -128,21 +198,65 @@ public static partial class Sc2DirectStrikeParser
         {
             Breakpoint = breakpoint,
             Income = incomesBySpawn.GetValueOrDefault(spawn),
-            GasCount = player.RefineryTimes.Count(refinery => refinery <= stats.Time),
+            GasCount = GetGasCount(player, stats.Time),
             ArmyValue = armyValuesBySpawn.GetValueOrDefault(spawn),
             KilledValue = stats.MineralsKilledArmy,
             LostValue = stats.MineralsLostArmy,
             UpgradeSpent = stats.MineralsUsedCurrentTechnology,
-            Units = [.. spawn.Units
-                .GroupBy(unit => unit.Name, StringComparer.Ordinal)
-                .OrderBy(group => group.Key, StringComparer.Ordinal)
-                .Select(group => new UnitDto
-                {
-                    Name = group.Key,
-                    Count = group.Count(),
-                    Positions = [.. group.SelectMany(unit => new[] { unit.X, unit.Y })],
-                })],
+            Units = CreateUnitDtos(spawn),
         };
+    }
+
+    private static int GetGasCount(DirectStrikePlayer player, TimeSpan targetTime)
+    {
+        int gasCount = 0;
+        foreach (TimeSpan refinery in player.RefineryTimes)
+        {
+            if (refinery <= targetTime)
+            {
+                gasCount++;
+            }
+        }
+
+        return gasCount;
+    }
+
+    private static List<UnitDto> CreateUnitDtos(DirectStrikePlayerSpawn spawn)
+    {
+        Dictionary<string, UnitDtoBuilder> unitsByName = new(StringComparer.Ordinal);
+        foreach (DirectStrikeSpawnUnit unit in spawn.Units)
+        {
+            if (!unitsByName.TryGetValue(unit.Name, out UnitDtoBuilder? builder))
+            {
+                builder = new(unit.Name);
+                unitsByName.Add(unit.Name, builder);
+            }
+
+            builder.Count++;
+            builder.Positions.Add(unit.X);
+            builder.Positions.Add(unit.Y);
+        }
+
+        List<UnitDtoBuilder> builders = new(unitsByName.Count);
+        foreach (UnitDtoBuilder builder in unitsByName.Values)
+        {
+            builders.Add(builder);
+        }
+
+        builders.Sort(static (left, right) => string.Compare(left.Name, right.Name, StringComparison.Ordinal));
+
+        List<UnitDto> units = new(builders.Count);
+        foreach (UnitDtoBuilder builder in builders)
+        {
+            units.Add(new()
+            {
+                Name = builder.Name,
+                Count = builder.Count,
+                Positions = builder.Positions,
+            });
+        }
+
+        return units;
     }
 
     private static Dictionary<DirectStrikePlayerSpawn, int> GetIncomesBySpawn(DirectStrikePlayer player)
@@ -209,7 +323,15 @@ public static partial class Sc2DirectStrikeParser
 
     private static int GetRefineryCost(DirectStrikePlayer player, int targetGameloop)
     {
-        int refineryCount = player.RefineryTimes.Count(refinery => ToGameloop(refinery) < targetGameloop);
+        int refineryCount = 0;
+        foreach (TimeSpan refinery in player.RefineryTimes)
+        {
+            if (ToGameloop(refinery) < targetGameloop)
+            {
+                refineryCount++;
+            }
+        }
+
         int cost = 0;
         for (int i = 0; i < refineryCount && i < RefineryCosts.Length; i++)
         {
@@ -318,7 +440,7 @@ public static partial class Sc2DirectStrikeParser
             return metadataVersion;
         }
 
-        return GetHeaderProperty(replay, "Version")?.ToString() ?? string.Empty;
+        return replay.Header is Header header ? header.Version.ToString() : string.Empty;
     }
 
     private static int ParseBaseBuild(string baseBuild, Sc2Replay replay)
@@ -328,22 +450,10 @@ public static partial class Sc2DirectStrikeParser
             return parsedBaseBuild;
         }
 
-        return GetHeaderProperty(replay, "BaseBuild") is int headerBaseBuild
-            ? headerBaseBuild
-            : 0;
-    }
-
-    private static object? GetHeaderProperty(Sc2Replay replay, string propertyName)
-    {
-        object? header = replay.Header;
-        return header?.GetType()
-            .GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance)
-            ?.GetValue(header);
+        return replay.Header is Header header ? header.BaseBuild : 0;
     }
 
     private readonly record struct BreakpointDefinition(Breakpoint Breakpoint, int Gameloop);
-
-    private readonly record struct SelectedBreakpointSpawn(Breakpoint Breakpoint, DirectStrikePlayerSpawn Spawn);
 
     private readonly record struct MessageCounts(int Messages, int Pings)
     {
@@ -356,5 +466,14 @@ public static partial class Sc2DirectStrikeParser
         {
             return this with { Pings = Pings + 1 };
         }
+    }
+
+    private sealed class UnitDtoBuilder(string name)
+    {
+        public string Name { get; } = name;
+
+        public int Count { get; set; }
+
+        public List<int> Positions { get; } = [];
     }
 }

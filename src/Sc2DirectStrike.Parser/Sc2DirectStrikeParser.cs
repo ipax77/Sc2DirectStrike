@@ -15,19 +15,23 @@ public static partial class Sc2DirectStrikeParser
             throw new InvalidOperationException("no direct strike replay.");
         }
 
-        MetadataPlayer[] metadataPlayers = [.. replay.Metadata?.Players ?? []];
-        Dictionary<int, MetadataPlayer> metadataPlayersById = [];
+        MetadataPlayer[] metadataPlayers = CopyToArray(replay.Metadata?.Players);
+        Dictionary<int, MetadataPlayer> metadataPlayersById = new(metadataPlayers.Length);
         foreach (MetadataPlayer metadataPlayer in metadataPlayers)
         {
             metadataPlayersById.TryAdd(metadataPlayer.PlayerID, metadataPlayer);
         }
 
-        DetailsPlayer[] detailsPlayers = [.. replay.Details.Players];
-        DirectStrikePlayerContext[] playerContexts = [.. detailsPlayers.Select((player, index) =>
+        DetailsPlayer[] detailsPlayers = CopyToArray(replay.Details.Players);
+        DirectStrikePlayerContext[] playerContexts = new DirectStrikePlayerContext[detailsPlayers.Length];
+        DirectStrikePlayer[] players = new DirectStrikePlayer[detailsPlayers.Length];
+        for (int i = 0; i < detailsPlayers.Length; i++)
         {
-            MetadataPlayer? metadataPlayer = GetMetadataPlayer(metadataPlayers, metadataPlayersById, index);
-            return new DirectStrikePlayerContext(ParseDetailsPlayer(player, metadataPlayer), index, metadataPlayer?.PlayerID);
-        })];
+            MetadataPlayer? metadataPlayer = GetMetadataPlayer(metadataPlayers, metadataPlayersById, i);
+            DirectStrikePlayer player = ParseDetailsPlayer(detailsPlayers[i], metadataPlayer);
+            playerContexts[i] = new(player, i, metadataPlayer?.PlayerID);
+            players[i] = player;
+        }
 
         DirectStrikeReplay directStrikeReplay = new()
         {
@@ -35,14 +39,26 @@ public static partial class Sc2DirectStrikeParser
             Duration = replay.Metadata is null ? TimeSpan.Zero : TimeSpan.FromSeconds(replay.Metadata.Duration),
             GameMode = GetGameMode(GetGameModeUpgradeNames(replay), detailsPlayers.Length),
             GameTime = replay.Details.DateTimeUTC,
-            Observers = [.. ParseObservers(replay)],
+            Observers = ParseObservers(replay),
             TE = replay.Details.Title.EndsWith("TE", StringComparison.OrdinalIgnoreCase),
-            Players = [.. playerContexts.Select(context => context.Player)]
+            Players = Array.AsReadOnly(players),
         };
 
         SetTrackerData(replay, playerContexts, directStrikeReplay);
 
         return directStrikeReplay;
+    }
+
+    private static T[] CopyToArray<T>(ICollection<T>? values)
+    {
+        if (values is null || values.Count == 0)
+        {
+            return [];
+        }
+
+        T[] array = new T[values.Count];
+        values.CopyTo(array, 0);
+        return array;
     }
 
     private sealed record DirectStrikePlayerContext(DirectStrikePlayer Player, int DetailsIndex, int? MetadataPlayerId)

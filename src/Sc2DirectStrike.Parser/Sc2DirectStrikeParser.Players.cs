@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using s2protocol.NET;
 using s2protocol.NET.Models;
 
@@ -5,11 +6,13 @@ namespace Sc2DirectStrike.Parser;
 
 public static partial class Sc2DirectStrikeParser
 {
-    private static IEnumerable<DirectStrikeObserver> ParseObservers(Sc2Replay replay)
+    private static ReadOnlyCollection<DirectStrikeObserver> ParseObservers(Sc2Replay replay)
     {
-        UserInitialData[] userInitialData = [.. replay.Initdata?.UserInitialData ?? []];
+        UserInitialData[] userInitialData = CopyToArray(replay.Initdata?.UserInitialData);
+        ICollection<Slot> slots = replay.Initdata?.LobbyState?.Slots ?? [];
+        List<DirectStrikeObserver> observers = new(slots.Count);
 
-        foreach (Slot slot in replay.Initdata?.LobbyState?.Slots ?? [])
+        foreach (Slot slot in slots)
         {
             if (slot.Observe != 1 || slot.UserId is not { } userId || userId < 0 || userId >= userInitialData.Length)
             {
@@ -22,7 +25,7 @@ public static partial class Sc2DirectStrikeParser
                 continue;
             }
 
-            yield return new()
+            observers.Add(new()
             {
                 Clan = string.IsNullOrWhiteSpace(user.ClanTag) ? null : user.ClanTag,
                 Id = id,
@@ -30,18 +33,14 @@ public static partial class Sc2DirectStrikeParser
                 Realm = realm,
                 Region = region,
                 SlotId = slot.WorkingSetSlotId,
-            };
+            });
         }
+
+        return observers.AsReadOnly();
     }
 
     private static DirectStrikePlayer ParseDetailsPlayer(DetailsPlayer player, MetadataPlayer? metadataPlayer)
     {
-        Commander commander = Commander.None;
-        if (Enum.TryParse(player.Race, out Commander race))
-        {
-            commander = race;
-        }
-
         PlayerResult result = metadataPlayer is null ? PlayerResult.None : ParsePlayerResult(metadataPlayer.Result);
         if (result == PlayerResult.None)
         {
@@ -53,7 +52,7 @@ public static partial class Sc2DirectStrikeParser
             APM = metadataPlayer?.APM ?? 0,
             Name = player.Name,
             Clan = player.ClanName,
-            Commander = commander,
+            Commander = ParseCommander(player.Race),
             Id = player.Toon.Id,
             Result = result,
             Region = player.Toon.Region,
@@ -78,7 +77,7 @@ public static partial class Sc2DirectStrikeParser
     private static Dictionary<int, DirectStrikePlayerContext> GetPlayerContextsByControlPlayerId(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts)
     {
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId = [];
-        Slot[] slots = [.. replay.Initdata?.LobbyState?.Slots ?? []];
+        Slot[] slots = CopyToArray(replay.Initdata?.LobbyState?.Slots);
 
         Dictionary<(int Region, int Realm, int Id), DirectStrikePlayerContext> playersByToon = [];
         Dictionary<int, DirectStrikePlayerContext> playersByMetadataPlayerId = [];
@@ -207,42 +206,102 @@ public static partial class Sc2DirectStrikeParser
             return false;
         }
 
-        string commanderName = unitTypeName[workerPrefix.Length..];
+        ReadOnlySpan<char> commanderName = unitTypeName.AsSpan(workerPrefix.Length);
         commander = commanderName switch
         {
             nameof(Commander.Protoss) => Commander.Protoss,
             nameof(Commander.Terran) => Commander.Terran,
             nameof(Commander.Zerg) => Commander.Zerg,
-            _ => Enum.TryParse(commanderName, out Commander parsedCommander) ? parsedCommander : Commander.None,
+            nameof(Commander.Abathur) => Commander.Abathur,
+            nameof(Commander.Alarak) => Commander.Alarak,
+            nameof(Commander.Artanis) => Commander.Artanis,
+            nameof(Commander.Dehaka) => Commander.Dehaka,
+            nameof(Commander.Fenix) => Commander.Fenix,
+            nameof(Commander.Horner) => Commander.Horner,
+            nameof(Commander.Karax) => Commander.Karax,
+            nameof(Commander.Kerrigan) => Commander.Kerrigan,
+            nameof(Commander.Mengsk) => Commander.Mengsk,
+            nameof(Commander.Nova) => Commander.Nova,
+            nameof(Commander.Raynor) => Commander.Raynor,
+            nameof(Commander.Stetmann) => Commander.Stetmann,
+            nameof(Commander.Stukov) => Commander.Stukov,
+            nameof(Commander.Swann) => Commander.Swann,
+            nameof(Commander.Tychus) => Commander.Tychus,
+            nameof(Commander.Vorazun) => Commander.Vorazun,
+            nameof(Commander.Zagara) => Commander.Zagara,
+            nameof(Commander.Zeratul) => Commander.Zeratul,
+            nameof(Commander.Random) => Commander.Random,
+            _ => Commander.None,
         };
 
         return commander != Commander.None;
     }
 
+    private static Commander ParseCommander(string? commander)
+    {
+        return commander.AsSpan() switch
+        {
+            nameof(Commander.Protoss) => Commander.Protoss,
+            nameof(Commander.Terran) => Commander.Terran,
+            nameof(Commander.Zerg) => Commander.Zerg,
+            nameof(Commander.Abathur) => Commander.Abathur,
+            nameof(Commander.Alarak) => Commander.Alarak,
+            nameof(Commander.Artanis) => Commander.Artanis,
+            nameof(Commander.Dehaka) => Commander.Dehaka,
+            nameof(Commander.Fenix) => Commander.Fenix,
+            nameof(Commander.Horner) => Commander.Horner,
+            nameof(Commander.Karax) => Commander.Karax,
+            nameof(Commander.Kerrigan) => Commander.Kerrigan,
+            nameof(Commander.Mengsk) => Commander.Mengsk,
+            nameof(Commander.Nova) => Commander.Nova,
+            nameof(Commander.Raynor) => Commander.Raynor,
+            nameof(Commander.Stetmann) => Commander.Stetmann,
+            nameof(Commander.Stukov) => Commander.Stukov,
+            nameof(Commander.Swann) => Commander.Swann,
+            nameof(Commander.Tychus) => Commander.Tychus,
+            nameof(Commander.Vorazun) => Commander.Vorazun,
+            nameof(Commander.Zagara) => Commander.Zagara,
+            nameof(Commander.Zeratul) => Commander.Zeratul,
+            nameof(Commander.Random) => Commander.Random,
+            _ => Commander.None,
+        };
+    }
+
     private static Race ParseRace(string? race)
     {
-        return race?.Trim() switch
+        ReadOnlySpan<char> value = race.AsSpan().Trim();
+        if (value.Equals("Rand", StringComparison.OrdinalIgnoreCase) || value.Equals("Random", StringComparison.OrdinalIgnoreCase))
         {
-            { } value when value.Equals("Rand", StringComparison.OrdinalIgnoreCase) => Race.Random,
-            { } value when value.Equals("Random", StringComparison.OrdinalIgnoreCase) => Race.Random,
-            { } value when value.Equals("Terr", StringComparison.OrdinalIgnoreCase) => Race.Terran,
-            { } value when value.Equals("Terran", StringComparison.OrdinalIgnoreCase) => Race.Terran,
-            { } value when value.Equals("Prot", StringComparison.OrdinalIgnoreCase) => Race.Protoss,
-            { } value when value.Equals("Protoss", StringComparison.OrdinalIgnoreCase) => Race.Protoss,
-            { } value when value.Equals("Zerg", StringComparison.OrdinalIgnoreCase) => Race.Zerg,
-            _ => Race.None,
-        };
+            return Race.Random;
+        }
+
+        if (value.Equals("Terr", StringComparison.OrdinalIgnoreCase) || value.Equals("Terran", StringComparison.OrdinalIgnoreCase))
+        {
+            return Race.Terran;
+        }
+
+        if (value.Equals("Prot", StringComparison.OrdinalIgnoreCase) || value.Equals("Protoss", StringComparison.OrdinalIgnoreCase))
+        {
+            return Race.Protoss;
+        }
+
+        return value.Equals("Zerg", StringComparison.OrdinalIgnoreCase) ? Race.Zerg : Race.None;
     }
 
     private static PlayerResult ParsePlayerResult(string? result)
     {
-        return result?.Trim() switch
+        ReadOnlySpan<char> value = result.AsSpan().Trim();
+        if (value.Equals("Win", StringComparison.OrdinalIgnoreCase))
         {
-            { } value when value.Equals("Win", StringComparison.OrdinalIgnoreCase) => PlayerResult.Win,
-            { } value when value.Equals("Loss", StringComparison.OrdinalIgnoreCase) => PlayerResult.Loss,
-            { } value when value.Equals("Undecided", StringComparison.OrdinalIgnoreCase) => PlayerResult.Undecided,
-            _ => PlayerResult.None,
-        };
+            return PlayerResult.Win;
+        }
+
+        if (value.Equals("Loss", StringComparison.OrdinalIgnoreCase))
+        {
+            return PlayerResult.Loss;
+        }
+
+        return value.Equals("Undecided", StringComparison.OrdinalIgnoreCase) ? PlayerResult.Undecided : PlayerResult.None;
     }
 
     private static PlayerResult ParsePlayerResult(int result)
