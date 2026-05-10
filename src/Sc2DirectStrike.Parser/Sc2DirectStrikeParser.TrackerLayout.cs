@@ -9,6 +9,8 @@ public static partial class Sc2DirectStrikeParser
 {
     private const double GameLoopsPerSecond = 22.4D;
     private const int SpawnGroupWindowGameloops = 112;
+    private const string PlayerStateVictoryUpgrade = "PlayerStateVictory";
+    private const string PlayerStateGameOverUpgrade = "PlayerStateGameOver";
 
     private static void SetTrackerData(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts, DirectStrikeReplay directStrikeReplay)
     {
@@ -128,7 +130,7 @@ public static partial class Sc2DirectStrikeParser
             }
         }
 
-        SetPlayerUpgrades(replay, playerContextsByControlPlayerId, playerContexts);
+        SetPlayerUpgrades(replay, playerContextsByControlPlayerId, playerContexts, directStrikeReplay);
 
         foreach (SUnitTypeChangeEvent typeChangeEvent in replay.TrackerEvents?.SUnitTypeChangeEvents ?? [])
         {
@@ -343,10 +345,13 @@ public static partial class Sc2DirectStrikeParser
     private static void SetPlayerUpgrades(
         Sc2Replay replay,
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
-        DirectStrikePlayerContext[] playerContexts)
+        DirectStrikePlayerContext[] playerContexts,
+        DirectStrikeReplay directStrikeReplay)
     {
         Dictionary<DirectStrikePlayer, List<int>> tierUpgradesByPlayer = new(playerContexts.Length);
         Dictionary<DirectStrikePlayer, Dictionary<string, int>> upgradesByPlayer = new(playerContexts.Length);
+        int? victoryTeam = null;
+        bool hasInvalidVictoryTeam = false;
 
         foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
         {
@@ -358,6 +363,33 @@ public static partial class Sc2DirectStrikeParser
 
             DirectStrikePlayer player = context.Player;
             string upgradeName = upgradeEvent.UpgradeTypeName;
+            if (upgradeName is PlayerStateVictoryUpgrade or PlayerStateGameOverUpgrade)
+            {
+                if (upgradeEvent.Gameloop > player.DurationGameloop)
+                {
+                    player.DurationGameloop = upgradeEvent.Gameloop;
+                    player.Duration = ToTimeSpan(upgradeEvent.Gameloop);
+                }
+
+                if (upgradeName == PlayerStateVictoryUpgrade)
+                {
+                    if (player.TeamId is not (1 or 2))
+                    {
+                        hasInvalidVictoryTeam = true;
+                    }
+                    else if (victoryTeam is null)
+                    {
+                        victoryTeam = player.TeamId;
+                    }
+                    else if (victoryTeam.Value != player.TeamId)
+                    {
+                        hasInvalidVictoryTeam = true;
+                    }
+                }
+
+                continue;
+            }
+
             if (upgradeName is "Tier2" or "Tier3")
             {
                 GetTierUpgrades(tierUpgradesByPlayer, player).Add(upgradeEvent.Gameloop);
@@ -371,6 +403,11 @@ public static partial class Sc2DirectStrikeParser
             }
 
             GetPlayerUpgrades(upgradesByPlayer, player).TryAdd(upgradeName, upgradeEvent.Gameloop);
+        }
+
+        if (victoryTeam is { } team && !hasInvalidVictoryTeam)
+        {
+            directStrikeReplay.WinnerTeam = team;
         }
 
         foreach (DirectStrikePlayerContext context in playerContexts)

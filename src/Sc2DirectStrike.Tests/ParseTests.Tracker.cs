@@ -56,15 +56,7 @@ public sealed partial class ParseTests
         TimeSpan nexusDeathTime = GetObjectiveDeathTime(replay, "ObjectiveNexus");
         TimeSpan planetaryDeathTime = GetObjectiveDeathTime(replay, "ObjectivePlanetaryFortress");
         TimeSpan expectedGameEndTime = nexusDeathTime == TimeSpan.Zero ? planetaryDeathTime : nexusDeathTime;
-        int expectedWinnerTeam = 0;
-        if (nexusDeathTime != TimeSpan.Zero)
-        {
-            expectedWinnerTeam = 1;
-        }
-        else if (planetaryDeathTime != TimeSpan.Zero)
-        {
-            expectedWinnerTeam = 2;
-        }
+        int expectedWinnerTeam = GetExpectedWinnerTeam(replay, dsReplay, nexusDeathTime, planetaryDeathTime);
 
         Assert.AreEqual(expectedGameEndTime, dsReplay.GameEndTime);
         Assert.AreEqual(expectedWinnerTeam, dsReplay.WinnerTeam);
@@ -160,6 +152,7 @@ public sealed partial class ParseTests
         DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
 
         ExpectedPlayerStats[][] expectedStats = GetExpectedPlayerStats(replay, dsReplay);
+        int[] expectedStateDurationGameloops = GetExpectedPlayerStateDurationGameloops(replay, dsReplay);
         Assert.IsTrue(dsReplay.Players.Any(player => player.Stats.Count > 0));
         for (int i = 0; i < dsReplay.Players.Count; i++)
         {
@@ -172,6 +165,7 @@ public sealed partial class ParseTests
                 .Select(stats => stats.Gameloop)
                 .DefaultIfEmpty()
                 .Max();
+            expectedDurationGameloop = Math.Max(expectedDurationGameloop, expectedStateDurationGameloops[i]);
             Assert.AreEqual(expectedDurationGameloop, player.DurationGameloop);
             Assert.AreEqual(TimeSpan.FromSeconds(expectedDurationGameloop / 22.4D), player.Duration);
 
@@ -280,6 +274,7 @@ public sealed partial class ParseTests
 
             string upgradeName = upgradeEvent.UpgradeTypeName;
             if (upgradeName is "Tier2" or "Tier3"
+                || IsExpectedPlayerStateUpgrade(upgradeName)
                 || IsExpectedFilteredUpgrade(upgradeName)
                 || (upgradeName.Contains("Level", StringComparison.Ordinal) && !IsExpectedNormalizedLevelUpgrade(upgradeName, dsReplay.Players[playerIndex].Commander)))
             {
@@ -344,6 +339,84 @@ public sealed partial class ParseTests
         }
 
         return [.. statsByPlayer.Select(stats => stats.OrderBy(stat => stat.Gameloop).ToArray())];
+    }
+
+    private static int GetExpectedWinnerTeam(
+        Sc2Replay replay,
+        DirectStrikeReplay dsReplay,
+        TimeSpan nexusDeathTime,
+        TimeSpan planetaryDeathTime)
+    {
+        if (TryGetExpectedVictoryTeam(replay, dsReplay, out int victoryTeam))
+        {
+            return victoryTeam;
+        }
+
+        if (nexusDeathTime != TimeSpan.Zero)
+        {
+            return 1;
+        }
+
+        return planetaryDeathTime != TimeSpan.Zero ? 2 : 0;
+    }
+
+    private static bool TryGetExpectedVictoryTeam(Sc2Replay replay, DirectStrikeReplay dsReplay, out int team)
+    {
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        int? victoryTeam = null;
+        bool hasInvalidVictoryTeam = false;
+
+        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
+        {
+            if (upgradeEvent.Gameloop == 0
+                || upgradeEvent.UpgradeTypeName != "PlayerStateVictory"
+                || !playerIndexesByControlPlayerId.TryGetValue(upgradeEvent.PlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            int playerTeam = dsReplay.Players[playerIndex].TeamId;
+            if (playerTeam is not (1 or 2))
+            {
+                hasInvalidVictoryTeam = true;
+            }
+            else if (victoryTeam is null)
+            {
+                victoryTeam = playerTeam;
+            }
+            else if (victoryTeam.Value != playerTeam)
+            {
+                hasInvalidVictoryTeam = true;
+            }
+        }
+
+        team = victoryTeam ?? 0;
+        return victoryTeam is not null && !hasInvalidVictoryTeam;
+    }
+
+    private static int[] GetExpectedPlayerStateDurationGameloops(Sc2Replay replay, DirectStrikeReplay dsReplay)
+    {
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        int[] durations = new int[dsReplay.Players.Count];
+
+        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
+        {
+            if (upgradeEvent.Gameloop == 0
+                || !IsExpectedPlayerStateUpgrade(upgradeEvent.UpgradeTypeName)
+                || !playerIndexesByControlPlayerId.TryGetValue(upgradeEvent.PlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            durations[playerIndex] = Math.Max(durations[playerIndex], upgradeEvent.Gameloop);
+        }
+
+        return durations;
+    }
+
+    private static bool IsExpectedPlayerStateUpgrade(string upgradeName)
+    {
+        return upgradeName is "PlayerStateVictory" or "PlayerStateGameOver";
     }
 
     private static bool TryGetExpectedMiddleControlTeam(int upkeepPlayerId, out int team)
