@@ -24,6 +24,7 @@ public sealed class DirectStrikePlayer
     public int Id { get; set; }
     public int Region { get; set; }
     public int Realm { get; set; }
+    public ReadOnlyCollection<string> BuildUnitNames { get; set; } = [];
     public ReadOnlyCollection<DirectStrikePlayerSpawn> Spawns { get; set; } = [];
     public ReadOnlyCollection<DirectStrikePlayerStats> Stats { get; set; } = [];
 }

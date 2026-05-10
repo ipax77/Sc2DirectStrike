@@ -233,10 +233,20 @@ public static partial class Sc2DirectStrikeParser
 
         foreach (DirectStrikePlayerContext context in playerContexts)
         {
+            context.Player.BuildUnitNames = builtUnitNamesByPlayer.TryGetValue(context.Player, out HashSet<string>? builtUnitNames)
+                ? ToSortedReadOnlyCollection(builtUnitNames)
+                : [];
             context.Player.Spawns = spawnUnitsByPlayer.TryGetValue(context.Player, out List<TrackedSpawnUnit>? spawnUnits)
                 ? GroupPlayerSpawns(spawnUnits, context.Player.Stats)
                 : [];
         }
+    }
+
+    private static ReadOnlyCollection<string> ToSortedReadOnlyCollection(HashSet<string> values)
+    {
+        List<string> sortedValues = [.. values];
+        sortedValues.Sort(StringComparer.Ordinal);
+        return sortedValues.AsReadOnly();
     }
 
     private static bool IsOrderedByGameloop(ICollection<SUnitBornEvent> unitBornEvents)
@@ -281,7 +291,7 @@ public static partial class Sc2DirectStrikeParser
         if (player.TeamId is not (1 or 2)
             || !MapLayout.IsSpawnUnit(position, player.TeamId)
             || !builtUnitNamesByPlayer.TryGetValue(player, out HashSet<string>? builtUnitNames)
-            || !builtUnitNames.Contains(unitBornEvent.UnitTypeName))
+            || !IsAllowedSpawnUnitName(builtUnitNames, unitBornEvent.UnitTypeName))
         {
             return;
         }
@@ -293,6 +303,28 @@ public static partial class Sc2DirectStrikeParser
             position,
             unitBornEvent.SUnitDiedEvent is { } diedEvent ? new(diedEvent.X, diedEvent.Y) : null,
             unitBornEvent.SUnitDiedEvent?.Gameloop));
+    }
+
+    private static bool IsAllowedSpawnUnitName(HashSet<string> builtUnitNames, string spawnUnitName)
+    {
+        foreach (string builtUnitName in builtUnitNames)
+        {
+            if (IsAllowedSpawnUnitName(builtUnitName, spawnUnitName))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsAllowedSpawnUnitName(string builtUnitName, string spawnUnitName)
+    {
+        return string.Equals(spawnUnitName, builtUnitName, StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "Lightweight", StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "Starlight", StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "MP", StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "AP", StringComparison.Ordinal);
     }
 
     private static void SetPlayerStats(

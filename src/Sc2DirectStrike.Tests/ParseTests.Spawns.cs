@@ -12,6 +12,7 @@ public sealed partial class ParseTests
     [DataRow("testdata/Direct Strike (10096).SC2Replay")]
     [DataRow("testdata/Direct Strike (10124).SC2Replay")]
     [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (999).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task CanSetPlayerSpawnsFromTrackerEvents(string replayName)
@@ -53,10 +54,52 @@ public sealed partial class ParseTests
     }
 
     [TestMethod]
+    [DataRow("testdata/Direct Strike TE (999).SC2Replay")]
+    public async Task CanExposePlayerBuildUnitNamesFromTrackerEvents(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        ExpectedPlayerLayout[] layouts = GetExpectedPlayerLayouts(replay, dsReplay, playerIndexesByControlPlayerId);
+        HashSet<string>[] expectedBuildUnitNamesByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new HashSet<string>(StringComparer.Ordinal))];
+
+        foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
+        {
+            if (bornEvent.Gameloop == 0
+                || !playerIndexesByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            if (layouts[playerIndex].Contains(new(bornEvent.X, bornEvent.Y)))
+            {
+                expectedBuildUnitNamesByPlayer[playerIndex].Add(bornEvent.UnitTypeName);
+            }
+        }
+
+        for (int i = 0; i < dsReplay.Players.Count; i++)
+        {
+            CollectionAssert.AreEquivalent(
+                expectedBuildUnitNamesByPlayer[i].Order(StringComparer.Ordinal).ToArray(),
+                dsReplay.Players[i].BuildUnitNames.ToArray());
+        }
+
+        DirectStrikePlayer pax = dsReplay.Players.Single(player => player.Name == "PAX");
+        CollectionAssert.Contains(pax.BuildUnitNames.ToArray(), "Marine");
+
+        ReplayPlayerDto paxDto = Sc2DirectStrikeParser.ParseDto(replay).Players.Single(player => player.Name == "PAX");
+        SpawnDto min5 = paxDto.Spawns.Single(spawn => spawn.Breakpoint == Breakpoint.Min5);
+        Assert.IsNotNull(min5.Units.SingleOrDefault(unit => unit.Name == "MarineLightweight"));
+    }
+
+    [TestMethod]
     [DataRow("testdata/Direct Strike (10060).SC2Replay")]
     [DataRow("testdata/Direct Strike (10096).SC2Replay")]
     [DataRow("testdata/Direct Strike (10124).SC2Replay")]
     [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (999).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task SpawnUnitsRequireSamePlayerBuildAreaUnitType(string replayName)
@@ -101,7 +144,9 @@ public sealed partial class ParseTests
                 bornEvent.SUnitDiedEvent?.Y);
             if (exposedSpawnUnits.Contains(unit))
             {
-                CollectionAssert.Contains(builtUnitNamesByPlayer[playerIndex].ToArray(), bornEvent.UnitTypeName);
+                Assert.IsTrue(
+                    ExpectedIsAllowedSpawnUnitName(builtUnitNamesByPlayer[playerIndex], bornEvent.UnitTypeName),
+                    $"{bornEvent.UnitTypeName} must match a player build-area unit name directly or with an allowed suffix.");
                 verifiedSpawnUnits.Add(unit);
             }
         }
@@ -273,6 +318,28 @@ public sealed partial class ParseTests
             && position.X <= Math.Max(start.X, end.X)
             && position.Y >= Math.Min(start.Y, end.Y)
             && position.Y <= Math.Max(start.Y, end.Y);
+    }
+
+    private static bool ExpectedIsAllowedSpawnUnitName(HashSet<string> builtUnitNames, string spawnUnitName)
+    {
+        foreach (string builtUnitName in builtUnitNames)
+        {
+            if (ExpectedIsAllowedSpawnUnitName(builtUnitName, spawnUnitName))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool ExpectedIsAllowedSpawnUnitName(string builtUnitName, string spawnUnitName)
+    {
+        return string.Equals(spawnUnitName, builtUnitName, StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "Lightweight", StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "Starlight", StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "MP", StringComparison.Ordinal)
+            || string.Equals(spawnUnitName, builtUnitName + "AP", StringComparison.Ordinal);
     }
 
     private readonly record struct ExpectedPos(int X, int Y);
