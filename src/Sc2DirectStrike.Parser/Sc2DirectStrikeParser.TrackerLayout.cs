@@ -203,14 +203,31 @@ public static partial class Sc2DirectStrikeParser
         Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer = GetStagingAreasByPlayer(playerLayouts);
         ICollection<SUnitBornEvent> unitBornEvents = replay.TrackerEvents?.SUnitBornEvents ?? [];
         ICollection<SUnitTypeChangeEvent> unitTypeChangeEvents = replay.TrackerEvents?.SUnitTypeChangeEvents ?? [];
-        List<OrderedSpawnTrackerEvent> orderedTrackerEvents = GetOrderedSpawnTrackerEvents(unitBornEvents, unitTypeChangeEvents);
-        TrackSpawnEvents(
-            orderedTrackerEvents,
-            playerContextsByControlPlayerId,
-            stagingAreasByPlayer,
-            buildAreaUnitOwnersByTag,
-            builtUnitNamesByPlayer,
-            spawnUnitsByPlayer);
+        if (unitBornEvents is IReadOnlyList<SUnitBornEvent> orderedUnitBornEvents
+            && unitTypeChangeEvents is IReadOnlyList<SUnitTypeChangeEvent> orderedUnitTypeChangeEvents
+            && IsOrderedByGameloop(orderedUnitBornEvents)
+            && IsOrderedByGameloop(orderedUnitTypeChangeEvents))
+        {
+            TrackOrderedSpawnEvents(
+                orderedUnitBornEvents,
+                orderedUnitTypeChangeEvents,
+                playerContextsByControlPlayerId,
+                stagingAreasByPlayer,
+                buildAreaUnitOwnersByTag,
+                builtUnitNamesByPlayer,
+                spawnUnitsByPlayer);
+        }
+        else
+        {
+            List<OrderedSpawnTrackerEvent> orderedTrackerEvents = GetOrderedSpawnTrackerEvents(unitBornEvents, unitTypeChangeEvents);
+            TrackSpawnEvents(
+                orderedTrackerEvents,
+                playerContextsByControlPlayerId,
+                stagingAreasByPlayer,
+                buildAreaUnitOwnersByTag,
+                builtUnitNamesByPlayer,
+                spawnUnitsByPlayer);
+        }
 
         foreach (DirectStrikePlayerContext context in playerContexts)
         {
@@ -250,6 +267,112 @@ public static partial class Sc2DirectStrikeParser
         return orderedTrackerEvents;
     }
 
+    private static bool IsOrderedByGameloop(IReadOnlyList<SUnitBornEvent> events)
+    {
+        int previousGameloop = 0;
+        for (int i = 0; i < events.Count; i++)
+        {
+            int gameloop = events[i].Gameloop;
+            if (i > 0 && gameloop < previousGameloop)
+            {
+                return false;
+            }
+
+            previousGameloop = gameloop;
+        }
+
+        return true;
+    }
+
+    private static bool IsOrderedByGameloop(IReadOnlyList<SUnitTypeChangeEvent> events)
+    {
+        int previousGameloop = 0;
+        for (int i = 0; i < events.Count; i++)
+        {
+            int gameloop = events[i].Gameloop;
+            if (i > 0 && gameloop < previousGameloop)
+            {
+                return false;
+            }
+
+            previousGameloop = gameloop;
+        }
+
+        return true;
+    }
+
+    private static void TrackOrderedSpawnEvents(
+        IReadOnlyList<SUnitBornEvent> unitBornEvents,
+        IReadOnlyList<SUnitTypeChangeEvent> unitTypeChangeEvents,
+        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
+        Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer,
+        Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayer> buildAreaUnitOwnersByTag,
+        Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer,
+        Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer)
+    {
+        int bornIndex = 0;
+        int typeChangeIndex = 0;
+        List<SpawnCandidate> spawnCandidates = [];
+        while (bornIndex < unitBornEvents.Count || typeChangeIndex < unitTypeChangeEvents.Count)
+        {
+            spawnCandidates.Clear();
+            int gameloop = GetNextSpawnTrackerGameloop(unitBornEvents, bornIndex, unitTypeChangeEvents, typeChangeIndex);
+            int bornStart = bornIndex;
+            while (bornIndex < unitBornEvents.Count && unitBornEvents[bornIndex].Gameloop == gameloop)
+            {
+                bornIndex++;
+            }
+
+            int typeChangeStart = typeChangeIndex;
+            while (typeChangeIndex < unitTypeChangeEvents.Count && unitTypeChangeEvents[typeChangeIndex].Gameloop == gameloop)
+            {
+                typeChangeIndex++;
+            }
+
+            for (int i = bornStart; i < bornIndex; i++)
+            {
+                TrackBuildUnitBornEventAndQueueSpawnCandidate(
+                    unitBornEvents[i],
+                    playerContextsByControlPlayerId,
+                    stagingAreasByPlayer,
+                    buildAreaUnitOwnersByTag,
+                    builtUnitNamesByPlayer,
+                    spawnCandidates);
+            }
+
+            for (int i = typeChangeStart; i < typeChangeIndex; i++)
+            {
+                TrackBuildUnitTypeChangeEvent(unitTypeChangeEvents[i], buildAreaUnitOwnersByTag, builtUnitNamesByPlayer);
+            }
+
+            for (int i = 0; i < spawnCandidates.Count; i++)
+            {
+                TrackSpawnUnit(spawnCandidates[i], builtUnitNamesByPlayer, spawnUnitsByPlayer);
+            }
+        }
+    }
+
+    private static int GetNextSpawnTrackerGameloop(
+        IReadOnlyList<SUnitBornEvent> unitBornEvents,
+        int bornIndex,
+        IReadOnlyList<SUnitTypeChangeEvent> unitTypeChangeEvents,
+        int typeChangeIndex)
+    {
+        if (bornIndex >= unitBornEvents.Count)
+        {
+            return unitTypeChangeEvents[typeChangeIndex].Gameloop;
+        }
+
+        if (typeChangeIndex >= unitTypeChangeEvents.Count)
+        {
+            return unitBornEvents[bornIndex].Gameloop;
+        }
+
+        int bornGameloop = unitBornEvents[bornIndex].Gameloop;
+        int typeChangeGameloop = unitTypeChangeEvents[typeChangeIndex].Gameloop;
+        return bornGameloop <= typeChangeGameloop ? bornGameloop : typeChangeGameloop;
+    }
+
     private static void TrackSpawnEvents(
         List<OrderedSpawnTrackerEvent> orderedTrackerEvents,
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
@@ -259,8 +382,10 @@ public static partial class Sc2DirectStrikeParser
         Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer)
     {
         int index = 0;
+        List<SpawnCandidate> spawnCandidates = [];
         while (index < orderedTrackerEvents.Count)
         {
+            spawnCandidates.Clear();
             int gameloop = orderedTrackerEvents[index].Gameloop;
             int nextIndex = index + 1;
             while (nextIndex < orderedTrackerEvents.Count && orderedTrackerEvents[nextIndex].Gameloop == gameloop)
@@ -272,7 +397,13 @@ public static partial class Sc2DirectStrikeParser
             {
                 if (orderedTrackerEvents[i].BornEvent is { } bornEvent)
                 {
-                    TrackBuildUnitBornEvent(bornEvent, playerContextsByControlPlayerId, stagingAreasByPlayer, buildAreaUnitOwnersByTag, builtUnitNamesByPlayer);
+                    TrackBuildUnitBornEventAndQueueSpawnCandidate(
+                        bornEvent,
+                        playerContextsByControlPlayerId,
+                        stagingAreasByPlayer,
+                        buildAreaUnitOwnersByTag,
+                        builtUnitNamesByPlayer,
+                        spawnCandidates);
                 }
             }
 
@@ -284,12 +415,9 @@ public static partial class Sc2DirectStrikeParser
                 }
             }
 
-            for (int i = index; i < nextIndex; i++)
+            for (int i = 0; i < spawnCandidates.Count; i++)
             {
-                if (orderedTrackerEvents[i].BornEvent is { } bornEvent)
-                {
-                    TrackSpawnUnit(bornEvent, playerContextsByControlPlayerId, builtUnitNamesByPlayer, spawnUnitsByPlayer);
-                }
+                TrackSpawnUnit(spawnCandidates[i], builtUnitNamesByPlayer, spawnUnitsByPlayer);
             }
 
             index = nextIndex;
@@ -303,12 +431,13 @@ public static partial class Sc2DirectStrikeParser
         return sortedValues.AsReadOnly();
     }
 
-    private static void TrackBuildUnitBornEvent(
+    private static void TrackBuildUnitBornEventAndQueueSpawnCandidate(
         SUnitBornEvent unitBornEvent,
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
         Dictionary<DirectStrikePlayer, Polygon> stagingAreasByPlayer,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayer> buildAreaUnitOwnersByTag,
-        Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer)
+        Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer,
+        List<SpawnCandidate> spawnCandidates)
     {
         if (unitBornEvent.Gameloop == 0
             || !playerContextsByControlPlayerId.TryGetValue(unitBornEvent.ControlPlayerId, out DirectStrikePlayerContext? context))
@@ -318,14 +447,17 @@ public static partial class Sc2DirectStrikeParser
 
         DirectStrikePlayer player = context.Player;
         Pos position = new(unitBornEvent.X, unitBornEvent.Y);
-        if (!stagingAreasByPlayer.TryGetValue(player, out Polygon? stagingArea)
-            || !stagingArea.Contains(position))
+        if (stagingAreasByPlayer.TryGetValue(player, out Polygon? stagingArea)
+            && stagingArea.Contains(position))
         {
-            return;
+            GetBuiltUnitNames(builtUnitNamesByPlayer, player).Add(unitBornEvent.UnitTypeName);
+            buildAreaUnitOwnersByTag[(unitBornEvent.UnitTagIndex, unitBornEvent.UnitTagRecycle)] = player;
         }
 
-        GetBuiltUnitNames(builtUnitNamesByPlayer, player).Add(unitBornEvent.UnitTypeName);
-        buildAreaUnitOwnersByTag[(unitBornEvent.UnitTagIndex, unitBornEvent.UnitTagRecycle)] = player;
+        if (player.TeamId is 1 or 2 && MapLayout.IsSpawnUnit(position, player.TeamId))
+        {
+            spawnCandidates.Add(new(unitBornEvent, player, position));
+        }
     }
 
     private static void TrackBuildUnitTypeChangeEvent(
@@ -343,22 +475,13 @@ public static partial class Sc2DirectStrikeParser
     }
 
     private static void TrackSpawnUnit(
-        SUnitBornEvent unitBornEvent,
-        Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId,
+        SpawnCandidate spawnCandidate,
         Dictionary<DirectStrikePlayer, HashSet<string>> builtUnitNamesByPlayer,
         Dictionary<DirectStrikePlayer, List<TrackedSpawnUnit>> spawnUnitsByPlayer)
     {
-        if (unitBornEvent.Gameloop == 0
-            || !playerContextsByControlPlayerId.TryGetValue(unitBornEvent.ControlPlayerId, out DirectStrikePlayerContext? context))
-        {
-            return;
-        }
-
-        DirectStrikePlayer player = context.Player;
-        Pos position = new(unitBornEvent.X, unitBornEvent.Y);
-        if (player.TeamId is not (1 or 2)
-            || !MapLayout.IsSpawnUnit(position, player.TeamId)
-            || !builtUnitNamesByPlayer.TryGetValue(player, out HashSet<string>? builtUnitNames)
+        SUnitBornEvent unitBornEvent = spawnCandidate.Event;
+        DirectStrikePlayer player = spawnCandidate.Player;
+        if (!builtUnitNamesByPlayer.TryGetValue(player, out HashSet<string>? builtUnitNames)
             || !IsAllowedSpawnUnitName(builtUnitNames, unitBornEvent.UnitTypeName))
         {
             return;
@@ -368,7 +491,7 @@ public static partial class Sc2DirectStrikeParser
             unitBornEvent.UnitIndex,
             unitBornEvent.UnitTypeName,
             unitBornEvent.Gameloop,
-            position,
+            spawnCandidate.Position,
             unitBornEvent.SUnitDiedEvent is { } diedEvent ? new(diedEvent.X, diedEvent.Y) : null,
             unitBornEvent.SUnitDiedEvent?.Gameloop));
     }
@@ -996,6 +1119,8 @@ public static partial class Sc2DirectStrikeParser
     private readonly record struct MiddleControlChange(int Gameloop, int Team);
 
     private readonly record struct OrderedSpawnTrackerEvent(int Gameloop, int Index, SUnitBornEvent? BornEvent, SUnitTypeChangeEvent? TypeChangeEvent);
+
+    private readonly record struct SpawnCandidate(SUnitBornEvent Event, DirectStrikePlayer Player, Pos Position);
 
     private readonly record struct TrackedSpawnUnit(int UnitIndex, string Name, int Gameloop, Pos Position, Pos? DiedPosition, int? DiedGameloop);
 
