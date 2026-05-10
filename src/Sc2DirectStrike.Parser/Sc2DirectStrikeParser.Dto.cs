@@ -9,6 +9,7 @@ namespace Sc2DirectStrike.Parser;
 public static partial class Sc2DirectStrikeParser
 {
     private const int CompatHashGameloop = 6_720;
+    private const double GameLoopsPerMinute = GameLoopsPerSecond * 60.0;
 
     private static readonly int[] RefineryCosts = [150, 225, 300, 375, 500];
 
@@ -448,24 +449,32 @@ public static partial class Sc2DirectStrikeParser
             return 0;
         }
 
+        // Assumes stats are sorted by Gameloop ascending.
+        if (targetGameloop <= stats[0].Gameloop)
+        {
+            return -GetRefineryCost(player, targetGameloop);
+        }
+
         double income = 0;
-        int previousGameloop = 0;
+        int previousGameloop = stats[0].Gameloop;
         int previousRate = stats[0].MineralsCollectionRate;
 
-        foreach (DirectStrikePlayerStats stat in stats)
+        foreach (DirectStrikePlayerStats stat in stats.Skip(1))
         {
             int currentGameloop = Math.Min(stat.Gameloop, targetGameloop);
+
             if (currentGameloop > previousGameloop)
             {
                 income += GetIncomeForInterval(previousRate, currentGameloop - previousGameloop);
                 previousGameloop = currentGameloop;
             }
 
-            previousRate = stat.MineralsCollectionRate;
             if (stat.Gameloop >= targetGameloop)
             {
                 return (int)income - GetRefineryCost(player, targetGameloop);
             }
+
+            previousRate = stat.MineralsCollectionRate;
         }
 
         if (previousGameloop < targetGameloop)
@@ -476,9 +485,9 @@ public static partial class Sc2DirectStrikeParser
         return (int)income - GetRefineryCost(player, targetGameloop);
     }
 
-    private static double GetIncomeForInterval(int mineralsPerMinute, int gameloopInterval)
+    private static double GetIncomeForInterval(int mineralsPerMinute, int gameloops)
     {
-        return mineralsPerMinute * (gameloopInterval / GameLoopsPerSecond) / 60D;
+        return mineralsPerMinute * gameloops / GameLoopsPerMinute;
     }
 
     private static int GetRefineryCost(DirectStrikePlayer player, int targetGameloop)
