@@ -63,21 +63,7 @@ public sealed partial class ParseTests
 
         Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
         ExpectedPlayerLayout[] layouts = GetExpectedPlayerLayouts(replay, dsReplay, playerIndexesByControlPlayerId);
-        HashSet<string>[] expectedBuildUnitNamesByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new HashSet<string>(StringComparer.Ordinal))];
-
-        foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
-        {
-            if (bornEvent.Gameloop == 0
-                || !playerIndexesByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out int playerIndex))
-            {
-                continue;
-            }
-
-            if (layouts[playerIndex].Contains(new(bornEvent.X, bornEvent.Y)))
-            {
-                expectedBuildUnitNamesByPlayer[playerIndex].Add(bornEvent.UnitTypeName);
-            }
-        }
+        HashSet<string>[] expectedBuildUnitNamesByPlayer = GetExpectedBuildUnitNamesByPlayer(replay, dsReplay, playerIndexesByControlPlayerId, layouts);
 
         for (int i = 0; i < dsReplay.Players.Count; i++)
         {
@@ -88,10 +74,16 @@ public sealed partial class ParseTests
 
         DirectStrikePlayer pax = dsReplay.Players.Single(player => player.Name == "PAX");
         CollectionAssert.Contains(pax.BuildUnitNames.ToArray(), "Marine");
+        DirectStrikePlayer apache = dsReplay.Players.Single(player => player.Name == "Apache");
+        CollectionAssert.Contains(apache.BuildUnitNames.ToArray(), "Hydralisk");
+        CollectionAssert.Contains(apache.BuildUnitNames.ToArray(), "LurkerMP");
 
         ReplayPlayerDto paxDto = Sc2DirectStrikeParser.ParseDto(replay).Players.Single(player => player.Name == "PAX");
         SpawnDto min5 = paxDto.Spawns.Single(spawn => spawn.Breakpoint == Breakpoint.Min5);
         Assert.IsNotNull(min5.Units.SingleOrDefault(unit => unit.Name == "MarineLightweight"));
+        ReplayPlayerDto apacheDto = Sc2DirectStrikeParser.ParseDto(replay).Players.Single(player => player.Name == "Apache");
+        Assert.IsTrue(apacheDto.Spawns.Single(spawn => spawn.Breakpoint == Breakpoint.Min10).Units.Any(unit => unit.Name == "LurkerMP"));
+        Assert.IsTrue(apacheDto.Spawns.Single(spawn => spawn.Breakpoint == Breakpoint.All).Units.Any(unit => unit.Name == "LurkerMP"));
     }
 
     [TestMethod]
@@ -112,43 +104,45 @@ public sealed partial class ParseTests
         ExpectedPlayerLayout[] layouts = GetExpectedPlayerLayouts(replay, dsReplay, playerIndexesByControlPlayerId);
         HashSet<ExpectedSpawnUnit> exposedSpawnUnits = GetExposedSpawnUnits(dsReplay);
         HashSet<string>[] builtUnitNamesByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new HashSet<string>(StringComparer.Ordinal))];
+        Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaPlayerIndexesByTag = [];
+        List<ExpectedOrderedSpawnTrackerEvent> orderedTrackerEvents = GetExpectedOrderedSpawnTrackerEvents(replay);
         HashSet<ExpectedSpawnUnit> verifiedSpawnUnits = [];
 
-        foreach (SUnitBornEvent bornEvent in (replay.TrackerEvents?.SUnitBornEvents ?? [])
-            .Select((bornEvent, index) => new { Event = bornEvent, Index = index })
-            .OrderBy(orderedEvent => orderedEvent.Event.Gameloop)
-            .ThenBy(orderedEvent => orderedEvent.Index)
-            .Select(orderedEvent => orderedEvent.Event))
+        int index = 0;
+        while (index < orderedTrackerEvents.Count)
         {
-            if (bornEvent.Gameloop == 0
-                || !playerIndexesByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out int playerIndex))
+            int gameloop = orderedTrackerEvents[index].Gameloop;
+            int nextIndex = index + 1;
+            while (nextIndex < orderedTrackerEvents.Count && orderedTrackerEvents[nextIndex].Gameloop == gameloop)
             {
-                continue;
+                nextIndex++;
             }
 
-            ExpectedPos position = new(bornEvent.X, bornEvent.Y);
-            if (layouts[playerIndex].Contains(position))
+            for (int i = index; i < nextIndex; i++)
             {
-                builtUnitNamesByPlayer[playerIndex].Add(bornEvent.UnitTypeName);
+                if (orderedTrackerEvents[i].BornEvent is { } bornEvent)
+                {
+                    TrackExpectedBuildUnitBornEvent(bornEvent, playerIndexesByControlPlayerId, layouts, buildAreaPlayerIndexesByTag, builtUnitNamesByPlayer);
+                }
             }
 
-            ExpectedSpawnUnit unit = new(
-                playerIndex,
-                bornEvent.UnitIndex,
-                bornEvent.UnitTypeName,
-                bornEvent.Gameloop,
-                bornEvent.X,
-                bornEvent.Y,
-                bornEvent.SUnitDiedEvent?.Gameloop,
-                bornEvent.SUnitDiedEvent?.X,
-                bornEvent.SUnitDiedEvent?.Y);
-            if (exposedSpawnUnits.Contains(unit))
+            for (int i = index; i < nextIndex; i++)
             {
-                Assert.IsTrue(
-                    ExpectedIsAllowedSpawnUnitName(builtUnitNamesByPlayer[playerIndex], bornEvent.UnitTypeName),
-                    $"{bornEvent.UnitTypeName} must match a player build-area unit name directly or with an allowed suffix.");
-                verifiedSpawnUnits.Add(unit);
+                if (orderedTrackerEvents[i].TypeChangeEvent is { } typeChangeEvent)
+                {
+                    TrackExpectedBuildUnitTypeChangeEvent(typeChangeEvent, buildAreaPlayerIndexesByTag, builtUnitNamesByPlayer);
+                }
             }
+
+            for (int i = index; i < nextIndex; i++)
+            {
+                if (orderedTrackerEvents[i].BornEvent is { } bornEvent)
+                {
+                    VerifyExpectedSpawnUnit(bornEvent, playerIndexesByControlPlayerId, builtUnitNamesByPlayer, exposedSpawnUnits, verifiedSpawnUnits);
+                }
+            }
+
+            index = nextIndex;
         }
 
         CollectionAssert.AreEquivalent(exposedSpawnUnits.ToArray(), verifiedSpawnUnits.ToArray());
@@ -254,6 +248,143 @@ public sealed partial class ParseTests
                 unit.DiedY)))];
     }
 
+    private static HashSet<string>[] GetExpectedBuildUnitNamesByPlayer(
+        Sc2Replay replay,
+        DirectStrikeReplay dsReplay,
+        Dictionary<int, int> playerIndexesByControlPlayerId,
+        ExpectedPlayerLayout[] layouts)
+    {
+        HashSet<string>[] builtUnitNamesByPlayer = [.. Enumerable.Range(0, dsReplay.Players.Count).Select(_ => new HashSet<string>(StringComparer.Ordinal))];
+        Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaPlayerIndexesByTag = [];
+        List<ExpectedOrderedSpawnTrackerEvent> orderedTrackerEvents = GetExpectedOrderedSpawnTrackerEvents(replay);
+
+        int index = 0;
+        while (index < orderedTrackerEvents.Count)
+        {
+            int gameloop = orderedTrackerEvents[index].Gameloop;
+            int nextIndex = index + 1;
+            while (nextIndex < orderedTrackerEvents.Count && orderedTrackerEvents[nextIndex].Gameloop == gameloop)
+            {
+                nextIndex++;
+            }
+
+            for (int i = index; i < nextIndex; i++)
+            {
+                if (orderedTrackerEvents[i].BornEvent is { } bornEvent)
+                {
+                    TrackExpectedBuildUnitBornEvent(bornEvent, playerIndexesByControlPlayerId, layouts, buildAreaPlayerIndexesByTag, builtUnitNamesByPlayer);
+                }
+            }
+
+            for (int i = index; i < nextIndex; i++)
+            {
+                if (orderedTrackerEvents[i].TypeChangeEvent is { } typeChangeEvent)
+                {
+                    TrackExpectedBuildUnitTypeChangeEvent(typeChangeEvent, buildAreaPlayerIndexesByTag, builtUnitNamesByPlayer);
+                }
+            }
+
+            index = nextIndex;
+        }
+
+        return builtUnitNamesByPlayer;
+    }
+
+    private static List<ExpectedOrderedSpawnTrackerEvent> GetExpectedOrderedSpawnTrackerEvents(Sc2Replay replay)
+    {
+        ICollection<SUnitBornEvent> unitBornEvents = replay.TrackerEvents?.SUnitBornEvents ?? [];
+        ICollection<SUnitTypeChangeEvent> unitTypeChangeEvents = replay.TrackerEvents?.SUnitTypeChangeEvents ?? [];
+        List<ExpectedOrderedSpawnTrackerEvent> orderedTrackerEvents = new(unitBornEvents.Count + unitTypeChangeEvents.Count);
+        int index = 0;
+        foreach (SUnitBornEvent unitBornEvent in unitBornEvents)
+        {
+            orderedTrackerEvents.Add(new(unitBornEvent.Gameloop, index, unitBornEvent, null));
+            index++;
+        }
+
+        foreach (SUnitTypeChangeEvent unitTypeChangeEvent in unitTypeChangeEvents)
+        {
+            orderedTrackerEvents.Add(new(unitTypeChangeEvent.Gameloop, index, null, unitTypeChangeEvent));
+            index++;
+        }
+
+        orderedTrackerEvents.Sort(static (left, right) =>
+        {
+            int gameloopComparison = left.Gameloop.CompareTo(right.Gameloop);
+            return gameloopComparison != 0 ? gameloopComparison : left.Index.CompareTo(right.Index);
+        });
+
+        return orderedTrackerEvents;
+    }
+
+    private static void TrackExpectedBuildUnitBornEvent(
+        SUnitBornEvent bornEvent,
+        Dictionary<int, int> playerIndexesByControlPlayerId,
+        ExpectedPlayerLayout[] layouts,
+        Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaPlayerIndexesByTag,
+        HashSet<string>[] builtUnitNamesByPlayer)
+    {
+        if (bornEvent.Gameloop == 0
+            || !playerIndexesByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out int playerIndex))
+        {
+            return;
+        }
+
+        if (!layouts[playerIndex].Contains(new(bornEvent.X, bornEvent.Y)))
+        {
+            return;
+        }
+
+        builtUnitNamesByPlayer[playerIndex].Add(bornEvent.UnitTypeName);
+        buildAreaPlayerIndexesByTag[(bornEvent.UnitTagIndex, bornEvent.UnitTagRecycle)] = playerIndex;
+    }
+
+    private static void TrackExpectedBuildUnitTypeChangeEvent(
+        SUnitTypeChangeEvent typeChangeEvent,
+        Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaPlayerIndexesByTag,
+        HashSet<string>[] builtUnitNamesByPlayer)
+    {
+        if (typeChangeEvent.Gameloop == 0
+            || !buildAreaPlayerIndexesByTag.TryGetValue((typeChangeEvent.UnitTagIndex, typeChangeEvent.UnitTagRecycle), out int playerIndex))
+        {
+            return;
+        }
+
+        builtUnitNamesByPlayer[playerIndex].Add(typeChangeEvent.UnitTypeName);
+    }
+
+    private static void VerifyExpectedSpawnUnit(
+        SUnitBornEvent bornEvent,
+        Dictionary<int, int> playerIndexesByControlPlayerId,
+        HashSet<string>[] builtUnitNamesByPlayer,
+        HashSet<ExpectedSpawnUnit> exposedSpawnUnits,
+        HashSet<ExpectedSpawnUnit> verifiedSpawnUnits)
+    {
+        if (bornEvent.Gameloop == 0
+            || !playerIndexesByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out int playerIndex))
+        {
+            return;
+        }
+
+        ExpectedSpawnUnit unit = new(
+            playerIndex,
+            bornEvent.UnitIndex,
+            bornEvent.UnitTypeName,
+            bornEvent.Gameloop,
+            bornEvent.X,
+            bornEvent.Y,
+            bornEvent.SUnitDiedEvent?.Gameloop,
+            bornEvent.SUnitDiedEvent?.X,
+            bornEvent.SUnitDiedEvent?.Y);
+        if (exposedSpawnUnits.Contains(unit))
+        {
+            Assert.IsTrue(
+                ExpectedIsAllowedSpawnUnitName(builtUnitNamesByPlayer[playerIndex], bornEvent.UnitTypeName),
+                $"{bornEvent.UnitTypeName} must match a player build-area unit name directly or with an allowed suffix.");
+            verifiedSpawnUnits.Add(unit);
+        }
+    }
+
     private static object CreateParserPolygon(Type posType, Type polygonType, params ExpectedPos[] points)
     {
         Array parserPoints = Array.CreateInstance(posType, points.Length);
@@ -343,6 +474,8 @@ public sealed partial class ParseTests
     }
 
     private readonly record struct ExpectedPos(int X, int Y);
+
+    private readonly record struct ExpectedOrderedSpawnTrackerEvent(int Gameloop, int Index, SUnitBornEvent? BornEvent, SUnitTypeChangeEvent? TypeChangeEvent);
 
     private readonly record struct ExpectedSpawnUnit(int PlayerIndex, int UnitIndex, string Name, int Gameloop, int X, int Y, int? DiedGameloop, int? DiedX, int? DiedY);
 
