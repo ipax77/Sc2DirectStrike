@@ -45,9 +45,11 @@ public sealed class StressReplayTests
         if (replay.Metadata is not null)
         {
             Assert.AreEqual(replay.Metadata.BaseBuild, directStrikeReplay.BaseBuild);
-            Assert.AreEqual(TimeSpan.FromSeconds(replay.Metadata.Duration), directStrikeReplay.Duration);
         }
 
+        Assert.IsTrue(
+            directStrikeReplay.Duration == directStrikeReplay.GameEndTime
+                || directStrikeReplay.Duration == directStrikeReplay.Players.Select(player => player.Duration).DefaultIfEmpty().Max());
         Assert.IsTrue(
             directStrikeReplay.Players.Any(player => player.Stats.Count > 0 || player.Spawns.Count > 0)
                 || directStrikeReplay.GameEndTime > TimeSpan.Zero

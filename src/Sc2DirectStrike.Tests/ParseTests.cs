@@ -37,12 +37,12 @@ public sealed partial class ParseTests
     }
 
     [TestMethod]
-    [DataRow("testdata/Direct Strike (10060).SC2Replay", 525)]
-    [DataRow("testdata/Direct Strike (10096).SC2Replay", 483)]
-    [DataRow("testdata/Direct Strike (10124).SC2Replay", 722)]
-    [DataRow("testdata/Direct Strike (10143).SC2Replay", 341)]
-    [DataRow("testdata/Direct Strike TE (1910).SC2Replay", 483)]
-    public async Task CanSetReplayMetadata(string replayName, int durationSeconds)
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10096).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10124).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
+    public async Task CanSetReplayMetadata(string replayName)
     {
         var replay = await GetReplay(replayName);
 
@@ -51,7 +51,7 @@ public sealed partial class ParseTests
         Assert.IsNotNull(replay.Metadata);
         Assert.AreEqual(replay.Metadata.BaseBuild, dsReplay.BaseBuild);
         Assert.IsNotEmpty(dsReplay.BaseBuild);
-        Assert.AreEqual(TimeSpan.FromSeconds(durationSeconds), dsReplay.Duration);
+        Assert.AreEqual(GetExpectedReplayDuration(replay, dsReplay), dsReplay.Duration);
     }
 
     [TestMethod]
@@ -206,7 +206,7 @@ public sealed partial class ParseTests
         var dsReplay = Sc2DirectStrikeParser.Parse(replay);
 
         Assert.AreEqual(string.Empty, dsReplay.BaseBuild);
-        Assert.AreEqual(TimeSpan.Zero, dsReplay.Duration);
+        Assert.AreEqual(GetExpectedReplayDuration(replay, dsReplay), dsReplay.Duration);
         Assert.AreEqual(PlayerResult.Win, dsReplay.Players[0].Result);
         Assert.AreEqual(Race.None, dsReplay.Players[0].SelectedRace);
         Assert.IsEmpty(dsReplay.Observers);
@@ -231,6 +231,7 @@ public sealed partial class ParseTests
 
         Assert.AreEqual(GameMode.None, dsReplay.GameMode);
         Assert.AreEqual(0, dsReplay.WinnerTeam);
+        Assert.AreEqual(TimeSpan.Zero, dsReplay.Duration);
         Assert.AreEqual(TimeSpan.Zero, dsReplay.GameEndTime);
         Assert.AreEqual(TimeSpan.Zero, dsReplay.CannonTime);
         Assert.AreEqual(TimeSpan.Zero, dsReplay.BunkerTime);

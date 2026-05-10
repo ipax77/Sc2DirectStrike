@@ -36,7 +36,6 @@ public static partial class Sc2DirectStrikeParser
         DirectStrikeReplay directStrikeReplay = new()
         {
             BaseBuild = replay.Metadata?.BaseBuild ?? string.Empty,
-            Duration = replay.Metadata is null ? TimeSpan.Zero : TimeSpan.FromSeconds(replay.Metadata.Duration),
             GameMode = GetGameMode(GetGameModeUpgradeNames(replay), detailsPlayers.Length),
             GameTime = replay.Details.DateTimeUTC,
             Observers = ParseObservers(replay),
@@ -45,8 +44,29 @@ public static partial class Sc2DirectStrikeParser
         };
 
         SetTrackerData(replay, playerContexts, directStrikeReplay);
+        SetReplayDuration(directStrikeReplay);
 
         return directStrikeReplay;
+    }
+
+    private static void SetReplayDuration(DirectStrikeReplay replay)
+    {
+        if (replay.GameEndTime > TimeSpan.Zero)
+        {
+            replay.Duration = replay.GameEndTime;
+            return;
+        }
+
+        TimeSpan duration = TimeSpan.Zero;
+        foreach (DirectStrikePlayer player in replay.Players)
+        {
+            if (player.Duration > duration)
+            {
+                duration = player.Duration;
+            }
+        }
+
+        replay.Duration = duration;
     }
 
     private static T[] CopyToArray<T>(ICollection<T>? values)

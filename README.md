@@ -70,7 +70,7 @@ Current behavior:
 - Accepts replay titles that start with `Direct Strike`, case-insensitively.
 - Throws `InvalidOperationException` for non-Direct Strike replay titles.
 - Sets `GameTime` from replay details, `TE` from the replay title, and
-  `BaseBuild` plus replay `Duration` from replay metadata.
+  `BaseBuild` from replay metadata.
 - Parses game mode from gameloop-zero mode and mutation upgrade events.
 - Parses players from replay details and metadata.
 - Parses observers from lobby/init data.
@@ -79,6 +79,8 @@ Current behavior:
 - Uses tracker events to populate player stats, refinery times, tier upgrades,
   filtered upgrade timings, middle control changes, objective timings, winner
   team, and grouped spawn units.
+- Sets replay `Duration` from the Nexus/Planetary death time, or from the
+  longest player duration when no objective death is available.
 - Matches metadata and tracker players by player id, toon, slot, or details-list
   fallback depending on the available replay data.
 

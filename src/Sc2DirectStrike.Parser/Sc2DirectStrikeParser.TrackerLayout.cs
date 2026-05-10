@@ -90,7 +90,8 @@ public static partial class Sc2DirectStrikeParser
 
                 case "ObjectivePlanetaryFortress":
                     mapLayout.Planetary = pos;
-                    if (bornEvent.SUnitDiedEvent is { } planetaryDeath)
+                    if (directStrikeReplay.GameEndTime == TimeSpan.Zero
+                        && bornEvent.SUnitDiedEvent is { } planetaryDeath)
                     {
                         directStrikeReplay.GameEndTime = ToTimeSpan(planetaryDeath.Gameloop);
                         directStrikeReplay.WinnerTeam = 2;

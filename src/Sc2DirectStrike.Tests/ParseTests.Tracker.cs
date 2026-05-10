@@ -59,9 +59,28 @@ public sealed partial class ParseTests
         int expectedWinnerTeam = GetExpectedWinnerTeam(replay, dsReplay, nexusDeathTime, planetaryDeathTime);
 
         Assert.AreEqual(expectedGameEndTime, dsReplay.GameEndTime);
+        Assert.AreEqual(GetExpectedReplayDuration(replay, dsReplay), dsReplay.Duration);
+        if (expectedGameEndTime > TimeSpan.Zero)
+        {
+            Assert.AreEqual(expectedGameEndTime, dsReplay.Duration);
+        }
+
         Assert.AreEqual(expectedWinnerTeam, dsReplay.WinnerTeam);
         Assert.AreEqual(GetObjectiveDeathTime(replay, "ObjectivePhotonCannon"), dsReplay.CannonTime);
         Assert.AreEqual(GetObjectiveDeathTime(replay, "ObjectiveBunker"), dsReplay.BunkerTime);
+    }
+
+    [TestMethod]
+    public async Task CanSetReplayDurationFromLongestPlayerDurationWithoutObjectiveDeath()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10060).SC2Replay");
+        RemoveObjectiveDeathEvents(replay);
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        Assert.AreEqual(TimeSpan.Zero, dsReplay.GameEndTime);
+        Assert.AreEqual(dsReplay.Players.Select(player => player.Duration).DefaultIfEmpty().Max(), dsReplay.Duration);
+        Assert.AreNotEqual(TimeSpan.Zero, dsReplay.Duration);
     }
 
     [TestMethod]
@@ -202,6 +221,19 @@ public sealed partial class ParseTests
         return objective?.SUnitDiedEvent is { } diedEvent
             ? TimeSpan.FromSeconds(diedEvent.Gameloop / 22.4D)
             : TimeSpan.Zero;
+    }
+
+    private static TimeSpan GetExpectedReplayDuration(Sc2Replay replay, DirectStrikeReplay dsReplay)
+    {
+        TimeSpan gameEndTime = GetObjectiveDeathTime(replay, "ObjectiveNexus");
+        if (gameEndTime == TimeSpan.Zero)
+        {
+            gameEndTime = GetObjectiveDeathTime(replay, "ObjectivePlanetaryFortress");
+        }
+
+        return gameEndTime == TimeSpan.Zero
+            ? dsReplay.Players.Select(player => player.Duration).DefaultIfEmpty().Max()
+            : gameEndTime;
     }
 
     private static TimeSpan[][] GetExpectedPlayerRefineryTimes(Sc2Replay replay, DirectStrikeReplay dsReplay)
@@ -477,6 +509,24 @@ public sealed partial class ParseTests
 
         SUpgradeEvent[] upgradeEvents = [.. replay.TrackerEvents.SUpgradeEvents.Where(upgradeEvent => upgradeEvent.UpgradeTypeName != "PlayerStateVictory")];
         property.SetValue(replay.TrackerEvents, upgradeEvents);
+    }
+
+    private static void RemoveObjectiveDeathEvents(Sc2Replay replay)
+    {
+        Assert.IsNotNull(replay.TrackerEvents);
+
+        var property = typeof(SUnitBornEvent).GetProperty(nameof(SUnitBornEvent.SUnitDiedEvent));
+        Assert.IsNotNull(property);
+        Assert.IsTrue(property.CanWrite);
+
+        foreach (SUnitBornEvent bornEvent in replay.TrackerEvents.SUnitBornEvents)
+        {
+            if (bornEvent.Gameloop == 0
+                && bornEvent.UnitTypeName is "ObjectiveNexus" or "ObjectivePlanetaryFortress")
+            {
+                property.SetValue(bornEvent, null);
+            }
+        }
     }
 
     private static int[] GetExpectedPlayerStateDurationGameloops(Sc2Replay replay, DirectStrikeReplay dsReplay)

@@ -37,10 +37,25 @@ public sealed class DuplicateTests
         (string replayPath, int leaverGameloop) = await GetLeaverReplayCandidate();
         Sc2Replay fullReplay = await GetReplay(replayPath);
         Sc2Replay emulatedLeaverReplay = await GetReplay(replayPath);
+        DirectStrikeReplay fullParsedReplay = Sc2DirectStrikeParser.Parse(fullReplay);
         TrimTrackerEventsAfter(emulatedLeaverReplay, leaverGameloop);
 
         ReplayDto fullDto = Sc2DirectStrikeParser.ParseDto(fullReplay);
         ReplayDto emulatedLeaverDto = Sc2DirectStrikeParser.ParseDto(emulatedLeaverReplay);
+
+        if (ToGameloop(fullParsedReplay.Duration) < CompatHashGameloop)
+        {
+            Assert.IsEmpty(fullDto.CompatHash);
+            Assert.IsEmpty(emulatedLeaverDto.CompatHash);
+            return;
+        }
+
+        if (fullParsedReplay.GameEndTime == TimeSpan.Zero)
+        {
+            Assert.IsNotEmpty(fullDto.CompatHash);
+            Assert.IsEmpty(emulatedLeaverDto.CompatHash);
+            return;
+        }
 
         Assert.IsNotEmpty(fullDto.CompatHash);
         Assert.IsNotEmpty(emulatedLeaverDto.CompatHash);
@@ -73,6 +88,11 @@ public sealed class DuplicateTests
 
         Assert.Fail("Expected at least one fixture with a player duration before the 5 minute compat hash mark.");
         return default;
+    }
+
+    private static int ToGameloop(TimeSpan time)
+    {
+        return (int)Math.Round(time.TotalSeconds * 22.4D);
     }
 
     private static string[] GetOrderedPlayerCompatHashes(ReplayDto dto)
