@@ -1,6 +1,7 @@
 <Solution>
   <Project Path="Sc2DirectStrike.Benchmarks/Sc2DirectStrike.Benchmarks.csproj" />
   <Project Path="Sc2DirectStrike.DuplicateSample/Sc2DirectStrike.DuplicateSample.csproj" />
+  <Project Path="Sc2DirectStrike.IncomeSample/Sc2DirectStrike.IncomeSample.csproj" />
   <Project Path="Sc2DirectStrike.Parser/Sc2DirectStrike.Parser.csproj" />
   <Project Path="Sc2DirectStrike.Tests/Sc2DirectStrike.Tests.csproj" />
   <Project Path="Sc2DirectStrike.WasmSmoke/Sc2DirectStrike.WasmSmoke.csproj" />
