@@ -131,6 +131,7 @@ public static partial class Sc2DirectStrikeParser
         }
 
         SetPlayerUpgrades(replay, playerContextsByControlPlayerId, playerContexts, directStrikeReplay);
+        SetPlayerResultsFromWinnerTeam(directStrikeReplay);
 
         foreach (SUnitTypeChangeEvent typeChangeEvent in replay.TrackerEvents?.SUnitTypeChangeEvents ?? [])
         {
@@ -189,6 +190,22 @@ public static partial class Sc2DirectStrikeParser
         }
 
         SetPlayerSpawns(replay, playerContexts, playerContextsByControlPlayerId, playerLayouts);
+    }
+
+    private static void SetPlayerResultsFromWinnerTeam(DirectStrikeReplay replay)
+    {
+        if (replay.WinnerTeam is not (1 or 2))
+        {
+            return;
+        }
+
+        foreach (DirectStrikePlayer player in replay.Players)
+        {
+            if (player.TeamId is 1 or 2)
+            {
+                player.Result = player.TeamId == replay.WinnerTeam ? PlayerResult.Win : PlayerResult.Loss;
+            }
+        }
     }
 
     private static void SetPlayerSpawns(

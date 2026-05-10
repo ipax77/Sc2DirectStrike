@@ -65,6 +65,15 @@ public sealed partial class ParseTests
     }
 
     [TestMethod]
+    public async Task CanAdjustPlayerResultsFromClearWinnerSignals()
+    {
+        const string replayName = "testdata/Direct Strike (10060).SC2Replay";
+
+        await AssertPlayerResultsCanBeAdjustedFromWinnerSignal(replayName, removeVictoryUpgradeSignal: false);
+        await AssertPlayerResultsCanBeAdjustedFromWinnerSignal(replayName, removeVictoryUpgradeSignal: true);
+    }
+
+    [TestMethod]
     [DataRow("testdata/Direct Strike (10060).SC2Replay")]
     [DataRow("testdata/Direct Strike (10096).SC2Replay")]
     [DataRow("testdata/Direct Strike (10124).SC2Replay")]
@@ -392,6 +401,82 @@ public sealed partial class ParseTests
 
         team = victoryTeam ?? 0;
         return victoryTeam is not null && !hasInvalidVictoryTeam;
+    }
+
+    private async Task AssertPlayerResultsCanBeAdjustedFromWinnerSignal(string replayName, bool removeVictoryUpgradeSignal)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+        SetReplayPlayerResultsToUndecided(replay);
+        if (removeVictoryUpgradeSignal)
+        {
+            RemoveVictoryUpgradeEvents(replay);
+        }
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+        TimeSpan nexusDeathTime = GetObjectiveDeathTime(replay, "ObjectiveNexus");
+        TimeSpan planetaryDeathTime = GetObjectiveDeathTime(replay, "ObjectivePlanetaryFortress");
+        bool hasVictoryUpgradeSignal = TryGetExpectedVictoryTeam(replay, dsReplay, out _);
+        int expectedWinnerTeam = GetExpectedWinnerTeam(replay, dsReplay, nexusDeathTime, planetaryDeathTime);
+
+        Assert.AreEqual(!removeVictoryUpgradeSignal, hasVictoryUpgradeSignal);
+        Assert.AreNotEqual(0, expectedWinnerTeam, $"Expected a clear winner signal in {replayName}.");
+        AssertPlayerResultsMatchWinnerTeam(dsReplay, expectedWinnerTeam, replayName);
+    }
+
+    private static void AssertPlayerResultsMatchWinnerTeam(DirectStrikeReplay replay, int winnerTeam, string replayName)
+    {
+        foreach (DirectStrikePlayer player in replay.Players)
+        {
+            if (player.TeamId is not (1 or 2))
+            {
+                continue;
+            }
+
+            PlayerResult expectedResult = player.TeamId == winnerTeam ? PlayerResult.Win : PlayerResult.Loss;
+            Assert.AreEqual(
+                expectedResult,
+                player.Result,
+                $"Unexpected result for player '{player.Name}' in {replayName}.");
+        }
+    }
+
+    private static void SetReplayPlayerResultsToUndecided(Sc2Replay replay)
+    {
+        foreach (DetailsPlayer player in replay.Details?.Players ?? [])
+        {
+            SetReplayPlayerResultToUndecided(player);
+        }
+
+        foreach (MetadataPlayer player in replay.Metadata?.Players ?? [])
+        {
+            SetReplayPlayerResultToUndecided(player);
+        }
+    }
+
+    private static void SetReplayPlayerResultToUndecided(object player)
+    {
+        var property = player.GetType().GetProperty("Result");
+        Assert.IsNotNull(property);
+        Assert.IsTrue(property.CanWrite);
+
+        Type resultType = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+        object value = resultType == typeof(string)
+            ? "Undecided"
+            : resultType.IsEnum
+                ? Enum.Parse(resultType, nameof(PlayerResult.Undecided))
+                : Convert.ChangeType(0, resultType);
+        property.SetValue(player, value);
+    }
+
+    private static void RemoveVictoryUpgradeEvents(Sc2Replay replay)
+    {
+        Assert.IsNotNull(replay.TrackerEvents);
+
+        var property = typeof(TrackerEvents).GetProperty(nameof(TrackerEvents.SUpgradeEvents));
+        Assert.IsNotNull(property);
+
+        SUpgradeEvent[] upgradeEvents = [.. replay.TrackerEvents.SUpgradeEvents.Where(upgradeEvent => upgradeEvent.UpgradeTypeName != "PlayerStateVictory")];
+        property.SetValue(replay.TrackerEvents, upgradeEvents);
     }
 
     private static int[] GetExpectedPlayerStateDurationGameloops(Sc2Replay replay, DirectStrikeReplay dsReplay)
