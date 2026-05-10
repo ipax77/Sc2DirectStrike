@@ -22,6 +22,7 @@ public sealed class ReplayDto
 
 public sealed class ReplayPlayerDto
 {
+    public required string CompatHash { get; init; }
     public required string Name { get; init; }
     public string? Clan { get; init; }
     public Commander Race { get; init; }

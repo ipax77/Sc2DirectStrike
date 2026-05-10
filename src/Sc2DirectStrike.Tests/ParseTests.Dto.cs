@@ -35,7 +35,15 @@ public sealed partial class ParseTests
         ReplayDto dto = Sc2DirectStrikeParser.ParseDto(replay);
 
         Assert.AreEqual(replay.FileName, dto.FileName);
-        Assert.AreEqual(string.Empty, dto.CompatHash);
+        if (dto.Duration >= ToExpectedDtoTime(6_720) && dto.Players.Count > 0)
+        {
+            Assert.IsNotEmpty(dto.CompatHash);
+        }
+        else
+        {
+            Assert.AreEqual(string.Empty, dto.CompatHash);
+        }
+
         Assert.AreEqual(replay.Details?.Title ?? replay.Metadata?.Title ?? string.Empty, dto.Title);
         Assert.IsNotEmpty(dto.Version);
         Assert.AreEqual(parsedReplay.GameMode, dto.GameMode);
@@ -53,6 +61,7 @@ public sealed partial class ParseTests
         {
             DirectStrikePlayer expectedPlayer = parsedReplay.Players[i];
             ReplayPlayerDto actualPlayer = dto.Players.ElementAt(i);
+            Assert.IsNotEmpty(actualPlayer.CompatHash);
             Assert.AreEqual(expectedPlayer.Name, actualPlayer.Name);
             Assert.AreEqual(expectedPlayer.Clan, actualPlayer.Clan);
             Assert.AreEqual(expectedPlayer.Commander, actualPlayer.Race);
@@ -175,9 +184,85 @@ public sealed partial class ParseTests
         }));
     }
 
+    [TestMethod]
+    public async Task ReplayDtoCompatHashIsDeterministic()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10060).SC2Replay");
+
+        ReplayDto first = Sc2DirectStrikeParser.ParseDto(replay);
+        ReplayDto second = Sc2DirectStrikeParser.ParseDto(replay);
+
+        Assert.IsNotEmpty(first.CompatHash);
+        Assert.AreEqual(first.CompatHash, second.CompatHash);
+    }
+
+    [TestMethod]
+    public async Task ReplayDtoCompatHashDoesNotUseFileName()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10060).SC2Replay");
+
+        ReplayDto first = Sc2DirectStrikeParser.ParseDto(replay);
+        typeof(Sc2Replay).GetProperty(nameof(Sc2Replay.FileName))?.SetValue(replay, "renamed-copy.SC2Replay");
+        ReplayDto second = Sc2DirectStrikeParser.ParseDto(replay);
+
+        Assert.AreEqual(first.CompatHash, second.CompatHash);
+        Assert.AreNotEqual(first.FileName, second.FileName);
+    }
+
+    [TestMethod]
+    public void ReplayDtoCompatHashDoesNotUseGametime()
+    {
+        ReplayPlayerDto player = CreateCompatHashPlayer(includeMin5: true);
+
+        string compatHash = InvokeCreateCompatHash("Direct Strike", "1.2.3", GameMode.Standard, 2, 100, TimeSpan.FromMinutes(5), [player]);
+
+        Assert.IsNotEmpty(compatHash);
+        Assert.IsFalse(compatHash.Contains(DateTime.UnixEpoch.ToString("O"), StringComparison.Ordinal));
+    }
+
+    [TestMethod]
+    public void ReplayDtoPlayerCompatHashAllowsEmptySnapshot()
+    {
+        DirectStrikePlayer player = new()
+        {
+            Name = "Player",
+            Clan = "Clan",
+            Commander = Commander.Protoss,
+            SelectedRace = Race.Random,
+            TeamId = 1,
+            GamePos = 1,
+            Region = 2,
+            Realm = 1,
+            Id = 123,
+        };
+        PlayerDto playerDto = new()
+        {
+            PlayerId = 123,
+            Name = "Player",
+            ToonId = new()
+            {
+                Region = 2,
+                Realm = 1,
+                Id = 123,
+            },
+        };
+
+        Assert.IsNotEmpty(InvokeCreatePlayerCompatHash(player, playerDto, Commander.Random, snapshot: null));
+    }
+
+    [TestMethod]
+    public void ReplayDtoCompatHashIsEmptyBeforeFiveMinutes()
+    {
+        ReplayPlayerDto player = CreateCompatHashPlayer(includeMin5: false);
+
+        string compatHash = InvokeCreateCompatHash("Direct Strike", "1.2.3", GameMode.Standard, 2, 100, TimeSpan.FromMinutes(4), [player]);
+
+        Assert.AreEqual(string.Empty, compatHash);
+    }
+
     private static IEnumerable<ExpectedDtoBreakpointSpawn> GetExpectedDtoBreakpointSpawns(DirectStrikePlayer player)
     {
-        DirectStrikePlayerSpawn[] statsBackedSpawns = [.. player.Spawns.Where(spawn => spawn.SummaryStats is not null)];
+        DirectStrikePlayerSpawn[] statsBackedSpawns = [.. player.Spawns.Where(spawn => spawn.SummaryStats is { MineralsCollectionRate: > 0 })];
         if (statsBackedSpawns.Length == 0)
         {
             yield break;
@@ -317,6 +402,97 @@ public sealed partial class ParseTests
             Assert.AreEqual(expected.Count, actual.Count);
             CollectionAssert.AreEqual(expected.Positions.ToArray(), actual.Positions.ToArray());
         }
+    }
+
+    private static string InvokeCreateCompatHash(
+        string title,
+        string version,
+        GameMode gameMode,
+        int regionId,
+        int baseBuild,
+        TimeSpan duration,
+        List<ReplayPlayerDto> players)
+    {
+        var method = typeof(Sc2DirectStrikeParser).GetMethod("CreateCompatHash", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.IsNotNull(method);
+
+        object? result = method.Invoke(null, [title, version, gameMode, regionId, baseBuild, duration, players]);
+        Assert.IsNotNull(result);
+
+        return (string)result;
+    }
+
+    private static string InvokeCreatePlayerCompatHash(DirectStrikePlayer player, PlayerDto playerDto, Commander selectedRace, SpawnDto? snapshot)
+    {
+        var method = typeof(Sc2DirectStrikeParser).GetMethod("CreatePlayerCompatHash", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
+        Assert.IsNotNull(method);
+
+        object? result = method.Invoke(null, [player, playerDto, selectedRace, snapshot]);
+        Assert.IsNotNull(result);
+
+        return (string)result;
+    }
+
+    private static ReplayPlayerDto CreateCompatHashPlayer(bool includeMin5)
+    {
+        return CreateCompatHashPlayer(includeMin5
+            ? [CreateCompatHashSpawn(Breakpoint.Min5)]
+            : [CreateCompatHashSpawn(Breakpoint.All)]);
+    }
+
+    private static ReplayPlayerDto CreateCompatHashPlayer(IReadOnlyCollection<SpawnDto> spawns)
+    {
+        return new()
+        {
+            CompatHash = "player-compat",
+            Name = "Player",
+            Clan = "Clan",
+            Race = Commander.Protoss,
+            SelectedRace = Commander.Random,
+            TeamId = 1,
+            GamePos = 1,
+            Result = PlayerResult.Win,
+            Duration = TimeSpan.FromMinutes(5),
+            Apm = 42,
+            Messages = 1,
+            Pings = 2,
+            IsMvp = false,
+            Spawns = spawns,
+            Player = new()
+            {
+                PlayerId = 123,
+                Name = "Player",
+                ToonId = new()
+                {
+                    Region = 2,
+                    Realm = 1,
+                    Id = 123,
+                },
+            },
+        };
+    }
+
+    private static SpawnDto CreateCompatHashSpawn(Breakpoint breakpoint)
+    {
+        return new()
+        {
+            Breakpoint = breakpoint,
+            Income = 1000,
+            GasCount = 2,
+            ArmyValue = 500,
+            KilledValue = 300,
+            LostValue = 200,
+            UpgradeSpent = 100,
+            Units =
+            [
+                new()
+                {
+                    Name = "Zealot",
+                    Count = 2,
+                    Positions = [1, 2, 3, 4],
+                },
+            ],
+        };
     }
 
     private static Commander ExpectedSelectedRaceCommander(Race race)

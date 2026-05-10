@@ -1,4 +1,6 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
+using System.Text;
 using s2protocol.NET;
 using s2protocol.NET.Models;
 
@@ -6,11 +8,13 @@ namespace Sc2DirectStrike.Parser;
 
 public static partial class Sc2DirectStrikeParser
 {
+    private const int CompatHashGameloop = 6_720;
+
     private static readonly int[] RefineryCosts = [150, 225, 300, 375, 500];
 
     private static readonly BreakpointDefinition[] BreakpointDefinitions =
     [
-        new(Breakpoint.Min5, 6_720),
+        new(Breakpoint.Min5, CompatHashGameloop),
         new(Breakpoint.Min10, 13_440),
         new(Breakpoint.Min15, 20_160),
     ];
@@ -21,22 +25,28 @@ public static partial class Sc2DirectStrikeParser
 
         DirectStrikeReplay directStrikeReplay = Parse(replay);
         Dictionary<DirectStrikePlayer, MessageCounts> messageCountsByPlayer = GetMessageCountsByPlayer(replay, directStrikeReplay);
+        int compatHashGameloop = GetCompatHashGameloop(directStrikeReplay);
         List<ReplayPlayerDto> players = new(directStrikeReplay.Players.Count);
         foreach (DirectStrikePlayer player in directStrikeReplay.Players)
         {
-            players.Add(CreatePlayerDto(player, messageCountsByPlayer.GetValueOrDefault(player)));
+            players.Add(CreatePlayerDto(player, messageCountsByPlayer.GetValueOrDefault(player), compatHashGameloop));
         }
+
+        string title = replay.Details?.Title ?? replay.Metadata?.Title ?? string.Empty;
+        string version = GetReplayVersion(replay);
+        int regionId = GetRegionId(directStrikeReplay);
+        int baseBuild = ParseBaseBuild(directStrikeReplay.BaseBuild, replay);
 
         return new()
         {
             FileName = replay.FileName ?? string.Empty,
-            CompatHash = string.Empty,
-            Title = replay.Details?.Title ?? replay.Metadata?.Title ?? string.Empty,
-            Version = GetReplayVersion(replay),
+            CompatHash = CreateCompatHash(title, version, directStrikeReplay.GameMode, regionId, baseBuild, directStrikeReplay.Duration, players),
+            Title = title,
+            Version = version,
             GameMode = directStrikeReplay.GameMode,
-            RegionId = GetRegionId(directStrikeReplay),
+            RegionId = regionId,
             Gametime = directStrikeReplay.GameTime,
-            BaseBuild = ParseBaseBuild(directStrikeReplay.BaseBuild, replay),
+            BaseBuild = baseBuild,
             Duration = directStrikeReplay.Duration,
             Cannon = directStrikeReplay.CannonTime,
             Bunker = directStrikeReplay.BunkerTime,
@@ -47,17 +57,148 @@ public static partial class Sc2DirectStrikeParser
         };
     }
 
-    private static ReplayPlayerDto CreatePlayerDto(DirectStrikePlayer player, MessageCounts messageCounts)
+    private static int GetCompatHashGameloop(DirectStrikeReplay replay)
+    {
+        if (ToGameloop(replay.Duration) < CompatHashGameloop)
+        {
+            return 0;
+        }
+
+        int compatHashGameloop = CompatHashGameloop;
+        foreach (DirectStrikePlayer player in replay.Players)
+        {
+            if (player.DurationGameloop > 0 && player.DurationGameloop < compatHashGameloop)
+            {
+                compatHashGameloop = player.DurationGameloop;
+            }
+        }
+
+        return compatHashGameloop;
+    }
+
+    private static string CreateCompatHash(
+        string title,
+        string version,
+        GameMode gameMode,
+        int regionId,
+        int baseBuild,
+        TimeSpan duration,
+        List<ReplayPlayerDto> players)
+    {
+        if (players.Count == 0 || ToGameloop(duration) < CompatHashGameloop)
+        {
+            return string.Empty;
+        }
+
+        StringBuilder builder = new();
+        AppendString(builder, "ds-compat-v1");
+        AppendString(builder, title);
+        AppendString(builder, version);
+        AppendInt(builder, (int)gameMode);
+        AppendInt(builder, regionId);
+        AppendInt(builder, baseBuild);
+        AppendInt(builder, players.Count);
+
+        foreach (ReplayPlayerDto player in players
+            .OrderBy(static player => player.TeamId)
+            .ThenBy(static player => player.GamePos)
+            .ThenBy(static player => player.Player.ToonId.Region)
+            .ThenBy(static player => player.Player.ToonId.Realm)
+            .ThenBy(static player => player.Player.ToonId.Id)
+            .ThenBy(static player => player.Player.PlayerId)
+            .ThenBy(static player => player.Name, StringComparer.Ordinal))
+        {
+            AppendString(builder, player.CompatHash);
+        }
+
+        return builder.ToString();
+    }
+
+    private static string CreatePlayerCompatHash(
+        DirectStrikePlayer player,
+        PlayerDto playerDto,
+        Commander selectedRace,
+        SpawnDto? snapshot)
+    {
+        StringBuilder builder = new();
+        AppendString(builder, "ds-player-compat-v1");
+        AppendInt(builder, player.TeamId);
+        AppendInt(builder, player.GamePos);
+        AppendInt(builder, (int)player.Commander);
+        AppendInt(builder, (int)selectedRace);
+        AppendInt(builder, playerDto.ToonId.Region);
+        AppendInt(builder, playerDto.ToonId.Realm);
+        AppendInt(builder, playerDto.ToonId.Id);
+        AppendInt(builder, playerDto.PlayerId);
+        AppendString(builder, player.Name);
+        AppendString(builder, player.Clan ?? string.Empty);
+        AppendInt(builder, snapshot is null ? 0 : (int)snapshot.Breakpoint);
+        AppendInt(builder, snapshot?.Income ?? 0);
+        AppendInt(builder, snapshot?.GasCount ?? 0);
+        AppendInt(builder, snapshot?.ArmyValue ?? 0);
+        AppendInt(builder, snapshot?.KilledValue ?? 0);
+        AppendInt(builder, snapshot?.LostValue ?? 0);
+        AppendInt(builder, snapshot?.UpgradeSpent ?? 0);
+        AppendInt(builder, snapshot?.Units.Count ?? 0);
+
+        if (snapshot is not null)
+        {
+            foreach (UnitDto unit in snapshot.Units.OrderBy(static unit => unit.Name, StringComparer.Ordinal))
+            {
+                AppendString(builder, unit.Name);
+                AppendInt(builder, unit.Count);
+                AppendInt(builder, unit.Positions.Count);
+                foreach (int position in unit.Positions)
+                {
+                    AppendInt(builder, position);
+                }
+            }
+        }
+
+        return builder.ToString();
+    }
+
+    private static void AppendInt(StringBuilder builder, int value)
+    {
+        builder.Append('i');
+        builder.Append(value.ToString(CultureInfo.InvariantCulture));
+        builder.Append('|');
+    }
+
+    private static void AppendString(StringBuilder builder, string value)
+    {
+        builder.Append('s');
+        builder.Append(value.Length.ToString(CultureInfo.InvariantCulture));
+        builder.Append(':');
+        builder.Append(value);
+        builder.Append('|');
+    }
+
+    private static ReplayPlayerDto CreatePlayerDto(DirectStrikePlayer player, MessageCounts messageCounts, int compatHashGameloop)
     {
         Dictionary<DirectStrikePlayerSpawn, int> armyValuesBySpawn = GetArmyValuesBySpawn(player);
         Dictionary<DirectStrikePlayerSpawn, int> incomesBySpawn = GetIncomesBySpawn(player);
+        SpawnDto? compatHashSnapshot = CreateCompatHashSnapshotDto(player, compatHashGameloop, armyValuesBySpawn, incomesBySpawn);
+        Commander selectedRace = ToCommander(player.SelectedRace);
+        PlayerDto playerDto = new()
+        {
+            PlayerId = player.Id,
+            Name = player.Name,
+            ToonId = new()
+            {
+                Region = player.Region,
+                Realm = player.Realm,
+                Id = player.Id,
+            },
+        };
 
         return new()
         {
+            CompatHash = CreatePlayerCompatHash(player, playerDto, selectedRace, compatHashSnapshot),
             Name = player.Name,
             Clan = player.Clan,
             Race = player.Commander,
-            SelectedRace = ToCommander(player.SelectedRace),
+            SelectedRace = selectedRace,
             TeamId = player.TeamId,
             GamePos = player.GamePos,
             Result = player.Result,
@@ -70,17 +211,7 @@ public static partial class Sc2DirectStrikeParser
             Upgrades = CreateUpgradeDtos(player),
             TierUpgrades = player.TierUpgrades,
             Refineries = player.RefineryTimes,
-            Player = new()
-            {
-                PlayerId = player.Id,
-                Name = player.Name,
-                ToonId = new()
-                {
-                    Region = player.Region,
-                    Realm = player.Realm,
-                    Id = player.Id,
-                },
-            },
+            Player = playerDto,
         };
     }
 
@@ -124,12 +255,41 @@ public static partial class Sc2DirectStrikeParser
         return spawns;
     }
 
+    private static SpawnDto? CreateCompatHashSnapshotDto(
+        DirectStrikePlayer player,
+        int compatHashGameloop,
+        IReadOnlyDictionary<DirectStrikePlayerSpawn, int> armyValuesBySpawn,
+        IReadOnlyDictionary<DirectStrikePlayerSpawn, int> incomesBySpawn)
+    {
+        if (compatHashGameloop <= 0)
+        {
+            return null;
+        }
+
+        List<DirectStrikePlayerSpawn> statsBackedSpawns = new(player.Spawns.Count);
+        foreach (DirectStrikePlayerSpawn spawn in player.Spawns)
+        {
+            if (spawn.SummaryStats is { MineralsCollectionRate: > 0 } stats && stats.Gameloop <= compatHashGameloop)
+            {
+                statsBackedSpawns.Add(spawn);
+            }
+        }
+
+        if (statsBackedSpawns.Count == 0)
+        {
+            return null;
+        }
+
+        DirectStrikePlayerSpawn compatHashSpawn = FindClosestBreakpointSpawn(statsBackedSpawns, compatHashGameloop);
+        return CreateSpawnDto(Breakpoint.Min5, compatHashSpawn, player, armyValuesBySpawn, incomesBySpawn);
+    }
+
     private static List<DirectStrikePlayerSpawn> GetStatsBackedSpawns(DirectStrikePlayer player)
     {
         List<DirectStrikePlayerSpawn> statsBackedSpawns = new(player.Spawns.Count);
         foreach (DirectStrikePlayerSpawn spawn in player.Spawns)
         {
-            if (spawn.SummaryStats is not null)
+            if (spawn.SummaryStats is { MineralsCollectionRate: > 0 })
             {
                 statsBackedSpawns.Add(spawn);
             }
