@@ -147,8 +147,23 @@ public sealed partial class ParseTests
         var dsReplay = Sc2DirectStrikeParser.Parse(replay);
 
         CollectionAssert.AreEqual(
-            new[] { Commander.Terran, Commander.Tychus, Commander.Raynor, Commander.Stukov, Commander.Fenix, Commander.Terran },
+            new[] { Commander.Dehaka, Commander.Tychus, Commander.Raynor, Commander.Stukov, Commander.Fenix, Commander.Vorazun },
             dsReplay.Players.Select(player => player.Commander).ToArray());
+    }
+
+    [TestMethod]
+    public async Task CanPreferSpecificCommandersOverGenericRaceWorkers()
+    {
+        var replay = await GetReplay("testdata/Direct Strike (10147).SC2Replay");
+
+        var dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        CollectionAssert.AreEqual(
+            new[] { Commander.Swann, Commander.Fenix, Commander.Swann, Commander.Dehaka, Commander.Dehaka, Commander.Fenix },
+            dsReplay.Players
+                .OrderBy(player => player.GamePos)
+                .Select(player => player.Commander)
+                .ToArray());
     }
 
     [TestMethod]

@@ -17,7 +17,7 @@ public static partial class Sc2DirectStrikeParser
         Dictionary<int, DirectStrikePlayerContext> playerContextsByControlPlayerId = GetPlayerContextsByControlPlayerId(replay, playerContexts);
         Dictionary<DirectStrikePlayer, PlayerLayout> playerLayouts = new(playerContexts.Length);
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag = [];
-        HashSet<int> mappedCommanderControlPlayerIds = new(playerContexts.Length);
+        Dictionary<int, Commander> commandersByControlPlayerId = [];
         List<MiddleControlChange> middleControlChanges = [];
         MapLayout mapLayout = new();
 
@@ -26,11 +26,14 @@ public static partial class Sc2DirectStrikeParser
         foreach (SUnitBornEvent bornEvent in replay.TrackerEvents?.SUnitBornEvents ?? [])
         {
             if (bornEvent.Gameloop <= 1440
-                && playerContextsByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out DirectStrikePlayerContext? commanderContext)
-                && TryParseWorkerCommander(bornEvent.UnitTypeName, out Commander commander)
-                && mappedCommanderControlPlayerIds.Add(bornEvent.ControlPlayerId))
+                && playerContextsByControlPlayerId.ContainsKey(bornEvent.ControlPlayerId)
+                && TryParseWorkerCommander(bornEvent.UnitTypeName, out Commander commander))
             {
-                commanderContext.Player.Commander = commander;
+                if (!commandersByControlPlayerId.TryGetValue(bornEvent.ControlPlayerId, out Commander currentCommander)
+                    || (IsGenericRaceCommander(currentCommander) && !IsGenericRaceCommander(commander)))
+                {
+                    commandersByControlPlayerId[bornEvent.ControlPlayerId] = commander;
+                }
             }
 
             if (bornEvent.Gameloop != 0)
@@ -128,6 +131,14 @@ public static partial class Sc2DirectStrikeParser
                 };
                 refineryContext.Refineries.Add(refinery);
                 refineriesByTag.TryAdd((refinery.UnitTagIndex, refinery.UnitTagRecycle), refinery);
+            }
+        }
+
+        foreach (KeyValuePair<int, Commander> pair in commandersByControlPlayerId)
+        {
+            if (playerContextsByControlPlayerId.TryGetValue(pair.Key, out DirectStrikePlayerContext? context))
+            {
+                context.Player.Commander = pair.Value;
             }
         }
 
@@ -1021,6 +1032,11 @@ public static partial class Sc2DirectStrikeParser
     private static TimeSpan ToTimeSpan(int gameloop)
     {
         return TimeSpan.FromSeconds(gameloop / GameLoopsPerSecond);
+    }
+
+    private static bool IsGenericRaceCommander(Commander commander)
+    {
+        return commander is Commander.Protoss or Commander.Terran or Commander.Zerg or Commander.Random;
     }
 
     private static bool IsNormalizedLevelUpgrade(string upgradeName, Commander commander)
