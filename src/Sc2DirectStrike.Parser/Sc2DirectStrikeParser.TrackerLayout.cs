@@ -615,12 +615,6 @@ public static partial class Sc2DirectStrikeParser
             string upgradeName = upgradeEvent.UpgradeTypeName;
             if (upgradeName is PlayerStateVictoryUpgrade or PlayerStateGameOverUpgrade)
             {
-                if (upgradeEvent.Gameloop > player.DurationGameloop)
-                {
-                    player.DurationGameloop = upgradeEvent.Gameloop;
-                    player.Duration = ToTimeSpan(upgradeEvent.Gameloop);
-                }
-
                 if (upgradeName == PlayerStateVictoryUpgrade)
                 {
                     if (player.TeamId is not (1 or 2))

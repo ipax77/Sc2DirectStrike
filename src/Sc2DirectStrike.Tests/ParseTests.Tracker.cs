@@ -171,6 +171,7 @@ public sealed partial class ParseTests
     [DataRow("testdata/Direct Strike (10096).SC2Replay")]
     [DataRow("testdata/Direct Strike (10124).SC2Replay")]
     [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10161).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task CanSetPlayerStatsFromTrackerEvents(string replayName)
@@ -180,7 +181,6 @@ public sealed partial class ParseTests
         DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
 
         ExpectedPlayerStats[][] expectedStats = GetExpectedPlayerStats(replay, dsReplay);
-        int[] expectedStateDurationGameloops = GetExpectedPlayerStateDurationGameloops(replay, dsReplay);
         Assert.IsTrue(dsReplay.Players.Any(player => player.Stats.Count > 0));
         for (int i = 0; i < dsReplay.Players.Count; i++)
         {
@@ -193,7 +193,6 @@ public sealed partial class ParseTests
                 .Select(stats => stats.Gameloop)
                 .DefaultIfEmpty()
                 .Max();
-            expectedDurationGameloop = Math.Max(expectedDurationGameloop, expectedStateDurationGameloops[i]);
             Assert.AreEqual(expectedDurationGameloop, player.DurationGameloop);
             Assert.AreEqual(TimeSpan.FromSeconds(expectedDurationGameloop / 22.4D), player.Duration);
 
@@ -210,6 +209,24 @@ public sealed partial class ParseTests
                 Assert.AreEqual(expected.MineralsLostArmy, actual.MineralsLostArmy);
             }
         }
+    }
+
+    [TestMethod]
+    public async Task CanKeepLeaverDurationAtLastPositiveIncomeStats()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10161).SC2Replay");
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        DirectStrikePlayer gamePos4 = dsReplay.Players.Single(player => player.GamePos == 4);
+        DirectStrikePlayer gamePos5 = dsReplay.Players.Single(player => player.GamePos == 5);
+
+        Assert.AreEqual(5_115, gamePos4.DurationGameloop);
+        Assert.AreEqual(TimeSpan.FromSeconds(5_115 / 22.4D), gamePos4.Duration);
+        Assert.IsLessThan(6_720, gamePos4.DurationGameloop);
+        Assert.AreEqual(5_484, gamePos5.DurationGameloop);
+        Assert.AreEqual(TimeSpan.FromSeconds(5_484 / 22.4D), gamePos5.Duration);
+        Assert.IsLessThan(6_720, gamePos5.DurationGameloop);
     }
 
     private static TimeSpan GetObjectiveDeathTime(Sc2Replay replay, string unitTypeName)
@@ -527,26 +544,6 @@ public sealed partial class ParseTests
                 property.SetValue(bornEvent, null);
             }
         }
-    }
-
-    private static int[] GetExpectedPlayerStateDurationGameloops(Sc2Replay replay, DirectStrikeReplay dsReplay)
-    {
-        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
-        int[] durations = new int[dsReplay.Players.Count];
-
-        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
-        {
-            if (upgradeEvent.Gameloop == 0
-                || !IsExpectedPlayerStateUpgrade(upgradeEvent.UpgradeTypeName)
-                || !playerIndexesByControlPlayerId.TryGetValue(upgradeEvent.PlayerId, out int playerIndex))
-            {
-                continue;
-            }
-
-            durations[playerIndex] = Math.Max(durations[playerIndex], upgradeEvent.Gameloop);
-        }
-
-        return durations;
     }
 
     private static bool IsExpectedPlayerStateUpgrade(string upgradeName)

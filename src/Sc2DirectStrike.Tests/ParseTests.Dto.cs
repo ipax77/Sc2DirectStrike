@@ -103,6 +103,7 @@ public sealed partial class ParseTests
     [DataRow("testdata/Direct Strike (10096).SC2Replay")]
     [DataRow("testdata/Direct Strike (10124).SC2Replay")]
     [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10161).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
     public async Task CanParseReplayDtoBreakpointSpawns(string replayName)
@@ -144,6 +145,24 @@ public sealed partial class ParseTests
                 AssertUnitDtosAreEquivalent(expectedSpawn, actualSpawn);
             }
         }
+    }
+
+    [TestMethod]
+    public async Task ReplayDtoOmitsBreakpointsAfterLeaverDuration()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10161).SC2Replay");
+
+        ReplayDto dto = Sc2DirectStrikeParser.ParseDto(replay);
+
+        ReplayPlayerDto gamePos4 = dto.Players.Single(player => player.GamePos == 4);
+        ReplayPlayerDto gamePos5 = dto.Players.Single(player => player.GamePos == 5);
+
+        CollectionAssert.AreEqual(
+            new[] { Breakpoint.All },
+            gamePos4.Spawns.Select(spawn => spawn.Breakpoint).ToArray());
+        CollectionAssert.AreEqual(
+            new[] { Breakpoint.All },
+            gamePos5.Spawns.Select(spawn => spawn.Breakpoint).ToArray());
     }
 
     [TestMethod]
