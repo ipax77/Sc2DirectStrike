@@ -63,9 +63,9 @@ dotnet run -c Release --project src\Sc2DirectStrike.Benchmarks\Sc2DirectStrike.B
 - `src/Sc2DirectStrike.Tests` - MSTest test project with replay fixtures.
 - `src/Sc2DirectStrike.Tests/testdata` - sample `.SC2Replay` files used by tests and benchmarks.
 - `src/Sc2DirectStrike.Benchmarks` - BenchmarkDotNet parser benchmarks.
-- `src/Sc2DirectStrike.DuplicateSample` - sample tool for duplicate replay analysis.
-- `src/Sc2DirectStrike.IncomeSample` - sample tool for replay income calculations.
-- `src/Sc2DirectStrike.ParserCompareSample` - sample tool for parser comparison workflows.
+- `src/samples/Sc2DirectStrike.DuplicateSample` - sample tool for duplicate replay analysis.
+- `src/samples/Sc2DirectStrike.IncomeSample` - sample tool for replay income calculations.
+- `src/samples/Sc2DirectStrike.ParserCompareSample` - sample tool for parser comparison workflows.
 - `src/Sc2DirectStrike.WasmSmoke` - WebAssembly smoke project for parser compatibility checks.
 
 ## Tech Stack

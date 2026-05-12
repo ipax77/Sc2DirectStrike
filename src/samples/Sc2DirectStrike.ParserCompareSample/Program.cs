@@ -2,19 +2,8 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
-using s2protocol.NET;
-using s2protocol.NET.Models;
-using NewBreakpoint = Sc2DirectStrike.Parser.Breakpoint;
-using NewParser = Sc2DirectStrike.Parser.Sc2DirectStrikeParser;
-using NewReplayDto = Sc2DirectStrike.Parser.ReplayDto;
-using NewReplayPlayerDto = Sc2DirectStrike.Parser.ReplayPlayerDto;
-using NewSpawnDto = Sc2DirectStrike.Parser.SpawnDto;
-using NewUnitDto = Sc2DirectStrike.Parser.UnitDto;
-using OldParser = dsstats.parser.DsstatsParser;
-using OldReplayDto = dsstats.shared.ReplayDto;
-using OldReplayPlayerDto = dsstats.shared.ReplayPlayerDto;
-using OldSpawnDto = dsstats.shared.SpawnDto;
-using OldUnitDto = dsstats.shared.UnitDto;
+using System.Text.Json;
+using Sc2DirectStrike.ParserCompareSample.Shared;
 
 namespace Sc2DirectStrike.ParserCompareSample;
 
@@ -25,6 +14,8 @@ public static class Program
     private const int DefaultIterations = 1;
     private const int MaxDifferencesToPrint = 200;
     private const string ReplaySearchPattern = "Direct Strike TE*.SC2Replay";
+    private const string NewWorkerProjectName = "Sc2DirectStrike.ParserCompareSample.NewStack";
+    private const string OldWorkerProjectName = "Sc2DirectStrike.ParserCompareSample.OldStack";
 
     private static readonly string DefaultReplayDirectory = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
@@ -59,44 +50,35 @@ public static class Program
             return 2;
         }
 
-        using ReplayDecoder replayDecoder = new();
-        ReplayDecoderOptions replayDecoderOptions = CreateDecoderOptions();
-        List<ReplayComparison> comparisons = [];
-        List<ReplayError> errors = [];
-        string[] candidatePaths = [.. candidates.Select(static candidate => candidate.FullName)];
-
-        IAsyncEnumerable<DecodeParallelResult> decodeResults = replayDecoder.DecodeParallelWithErrorReport(
-            candidatePaths,
-            Math.Min(DecodeThreads, candidatePaths.Length),
-            replayDecoderOptions,
-            CancellationToken.None);
-
-        await foreach (DecodeParallelResult decodeResult in decodeResults)
+        CompareRequest request = new()
         {
-            string replayPath = decodeResult.ReplayPath;
-            if (decodeResult.Exception is { Length: > 0 } decodeException)
-            {
-                errors.Add(new(replayPath, "DecodeError", decodeException));
-                continue;
-            }
+            ReplayPaths = [.. candidates.Select(static candidate => candidate.FullName)],
+            DecodeThreads = Math.Min(DecodeThreads, candidates.Length),
+            ParseIterations = iterations,
+            DecoderOptions = CreateDecoderOptions(),
+        };
 
-            if (decodeResult.Sc2Replay is not { } replay)
-            {
-                errors.Add(new(replayPath, nameof(InvalidOperationException), "Decoder returned no replay and no exception."));
-                continue;
-            }
-
-            try
-            {
-                comparisons.Add(CompareReplay(replayPath, replay, iterations));
-            }
-            catch (Exception ex)
-            {
-                errors.Add(new(replayPath, ex.GetType().Name, ex.Message));
-            }
+        CompareWorkerResult oldResult;
+        CompareWorkerResult newResult;
+        try
+        {
+            oldResult = await RunWorkerAsync(OldWorkerProjectName, request);
+            newResult = await RunWorkerAsync(NewWorkerProjectName, request);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(ex.Message);
+            return 3;
         }
 
-        PrintSummary(inputPath, maxReplaySizeBytes, iterations, candidates.Length, comparisons, errors);
+        List<ReplayError> errors =
+        [
+            .. oldResult.Errors.Select(error => PrefixError(oldResult, error)),
+            .. newResult.Errors.Select(error => PrefixError(newResult, error)),
+        ];
+        List<ReplayComparison> comparisons = CompareResults(newResult, oldResult, errors);
+
+        PrintSummary(inputPath, maxReplaySizeBytes, iterations, candidates.Length, newResult, oldResult, comparisons, errors);
         PrintDifferences("Roster differences", comparisons.SelectMany(static comparison => comparison.RosterDifferences));
         PrintDifferences("Spawn differences", comparisons.SelectMany(static comparison => comparison.SpawnDifferences));
         PrintErrors(errors);
@@ -184,9 +166,8 @@ public static class Program
         return false;
     }
 
-    private static ReplayDecoderOptions CreateDecoderOptions()
-    {
-        return new()
+    private static CompareDecoderOptions CreateDecoderOptions()
+        => new()
         {
             Details = true,
             Initdata = true,
@@ -196,86 +177,151 @@ public static class Program
             TrackerEvents = true,
             AttributeEvents = false,
         };
-    }
 
-    private static ReplayComparison CompareReplay(string replayPath, Sc2Replay replay, int iterations)
+    private static async Task<CompareWorkerResult> RunWorkerAsync(string projectName, CompareRequest request)
     {
-        ParseTimingResult timing = MeasureParsers(replay, iterations);
-        List<Difference> rosterDifferences = [];
-        List<Difference> spawnDifferences = [];
+        string workerPath = ResolveWorkerPath(projectName);
+        string tempDirectory = Path.Combine(Path.GetTempPath(), "Sc2DirectStrike.ParserCompareSample", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(tempDirectory);
+        string requestPath = Path.Combine(tempDirectory, "request.json");
+        string resultPath = Path.Combine(tempDirectory, "result.json");
 
-        List<PlayerMatch> playerMatches = MatchPlayers(timing.NewDto.Players, timing.OldDto.Players);
-        CompareRoster(replayPath, playerMatches, rosterDifferences);
-        CompareSpawns(replayPath, playerMatches, spawnDifferences);
-
-        return new(
-            replayPath,
-            timing.NewElapsed,
-            timing.OldElapsed,
-            timing.Iterations,
-            rosterDifferences,
-            spawnDifferences);
-    }
-
-    private static ParseTimingResult MeasureParsers(Sc2Replay replay, int iterations)
-    {
-        NewReplayDto? newDto = null;
-        OldReplayDto? oldDto = null;
-        long newTicks = 0;
-        long oldTicks = 0;
-        Stopwatch stopwatch = new();
-
-        for (int i = 0; i < iterations; i++)
+        try
         {
-            if (i % 2 == 0)
+            await WriteJsonAsync(requestPath, request);
+            ProcessStartInfo startInfo = new()
             {
-                newTicks += Measure(stopwatch, () => newDto = NewParser.ParseDto(replay));
-                oldTicks += Measure(stopwatch, () => oldDto = OldParser.ParseReplay(replay));
-            }
-            else
+                FileName = "dotnet",
+                RedirectStandardError = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+            startInfo.ArgumentList.Add(workerPath);
+            startInfo.ArgumentList.Add(requestPath);
+            startInfo.ArgumentList.Add(resultPath);
+
+            using Process process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException($"Could not start worker '{projectName}'.");
+            Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
+            Task<string> stderrTask = process.StandardError.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            string stdout = await stdoutTask;
+            string stderr = await stderrTask;
+            if (process.ExitCode != 0)
             {
-                oldTicks += Measure(stopwatch, () => oldDto = OldParser.ParseReplay(replay));
-                newTicks += Measure(stopwatch, () => newDto = NewParser.ParseDto(replay));
+                throw new InvalidOperationException(
+                    $"Worker '{projectName}' failed with exit code {process.ExitCode}.{Environment.NewLine}{stderr}{stdout}");
             }
+
+            CompareWorkerResult? result = await ReadJsonAsync<CompareWorkerResult>(resultPath);
+            return result ?? throw new InvalidOperationException($"Worker '{projectName}' wrote no result.");
+        }
+        finally
+        {
+            TryDeleteDirectory(tempDirectory);
+        }
+    }
+
+    private static string ResolveWorkerPath(string projectName)
+    {
+        string envVar = projectName.EndsWith(".NewStack", StringComparison.Ordinal)
+            ? "SC2DIRECTSTRIKE_COMPARE_NEW_WORKER"
+            : "SC2DIRECTSTRIKE_COMPARE_OLD_WORKER";
+        string? configuredPath = Environment.GetEnvironmentVariable(envVar);
+        if (!string.IsNullOrWhiteSpace(configuredPath) && File.Exists(configuredPath))
+        {
+            return configuredPath;
         }
 
-        return new(
-            newDto ?? throw new InvalidOperationException("New parser returned no DTO."),
-            oldDto ?? throw new InvalidOperationException("Old parser returned no DTO."),
-            TimeSpan.FromTicks(newTicks),
-            TimeSpan.FromTicks(oldTicks),
-            iterations);
+        DirectoryInfo baseDirectory = new(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
+        string targetFramework = baseDirectory.Name;
+        DirectoryInfo? configurationDirectory = baseDirectory.Parent;
+        DirectoryInfo? binDirectory = configurationDirectory?.Parent;
+        DirectoryInfo? projectDirectory = binDirectory?.Parent;
+        DirectoryInfo? srcDirectory = projectDirectory?.Parent;
+        if (configurationDirectory is null || srcDirectory is null)
+        {
+            throw new InvalidOperationException($"Could not resolve worker path for '{projectName}'.");
+        }
+
+        string workerPath = Path.Combine(
+            srcDirectory.FullName,
+            projectName,
+            "bin",
+            configurationDirectory.Name,
+            targetFramework,
+            projectName + ".dll");
+
+        if (!File.Exists(workerPath))
+        {
+            throw new FileNotFoundException(
+                $"Worker '{projectName}' was not found. Build the compare sample project so worker project references are built.",
+                workerPath);
+        }
+
+        return workerPath;
     }
 
-    private static long Measure(Stopwatch stopwatch, Action action)
+    private static List<ReplayComparison> CompareResults(
+        CompareWorkerResult newResult,
+        CompareWorkerResult oldResult,
+        List<ReplayError> errors)
     {
-        stopwatch.Restart();
-        action();
-        stopwatch.Stop();
-        return stopwatch.ElapsedTicks;
+        Dictionary<string, NormalizedReplayResult> newReplaysByPath = newResult.Replays.ToDictionary(
+            static replay => replay.ReplayPath,
+            StringComparer.OrdinalIgnoreCase);
+        Dictionary<string, NormalizedReplayResult> oldReplaysByPath = oldResult.Replays.ToDictionary(
+            static replay => replay.ReplayPath,
+            StringComparer.OrdinalIgnoreCase);
+        List<ReplayComparison> comparisons = [];
+
+        foreach (string replayPath in newReplaysByPath.Keys.Concat(oldReplaysByPath.Keys).Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(static path => path, StringComparer.OrdinalIgnoreCase))
+        {
+            bool hasNew = newReplaysByPath.TryGetValue(replayPath, out NormalizedReplayResult? newReplay);
+            bool hasOld = oldReplaysByPath.TryGetValue(replayPath, out NormalizedReplayResult? oldReplay);
+            if (!hasNew || !hasOld)
+            {
+                errors.Add(new(
+                    replayPath,
+                    "ComparisonError",
+                    hasNew ? "Old stack did not produce a parsed replay." : "New stack did not produce a parsed replay."));
+                continue;
+            }
+
+            List<Difference> rosterDifferences = [];
+            List<Difference> spawnDifferences = [];
+            List<PlayerMatch> playerMatches = MatchPlayers(newReplay!.Replay.Players, oldReplay!.Replay.Players);
+            CompareRoster(replayPath, playerMatches, rosterDifferences);
+            CompareSpawns(replayPath, playerMatches, spawnDifferences);
+
+            comparisons.Add(new(replayPath, rosterDifferences, spawnDifferences));
+        }
+
+        return comparisons;
     }
 
     private static List<PlayerMatch> MatchPlayers(
-        IReadOnlyCollection<NewReplayPlayerDto> newPlayers,
-        IReadOnlyList<OldReplayPlayerDto> oldPlayers)
+        IReadOnlyCollection<NormalizedReplayPlayerDto> newPlayers,
+        IReadOnlyList<NormalizedReplayPlayerDto> oldPlayers)
     {
-        NewReplayPlayerDto[] newPlayerArray = [.. newPlayers];
-        Dictionary<ToonKey, List<IndexedPlayer<NewReplayPlayerDto>>> newPlayersByToon = GroupNewPlayersByToon(newPlayerArray);
-        Dictionary<ToonKey, List<IndexedPlayer<OldReplayPlayerDto>>> oldPlayersByToon = GroupOldPlayersByToon(oldPlayers);
+        NormalizedReplayPlayerDto[] newPlayerArray = [.. newPlayers];
+        Dictionary<ToonKey, List<IndexedPlayer<NormalizedReplayPlayerDto>>> newPlayersByToon = GroupPlayersByToon(newPlayerArray);
+        Dictionary<ToonKey, List<IndexedPlayer<NormalizedReplayPlayerDto>>> oldPlayersByToon = GroupPlayersByToon(oldPlayers);
         List<PlayerMatch> matches = [];
 
         foreach (ToonKey key in newPlayersByToon.Keys.Concat(oldPlayersByToon.Keys).Distinct().Order())
         {
-            newPlayersByToon.TryGetValue(key, out List<IndexedPlayer<NewReplayPlayerDto>>? newGroup);
-            oldPlayersByToon.TryGetValue(key, out List<IndexedPlayer<OldReplayPlayerDto>>? oldGroup);
+            newPlayersByToon.TryGetValue(key, out List<IndexedPlayer<NormalizedReplayPlayerDto>>? newGroup);
+            oldPlayersByToon.TryGetValue(key, out List<IndexedPlayer<NormalizedReplayPlayerDto>>? oldGroup);
             newGroup ??= [];
             oldGroup ??= [];
 
             int pairCount = Math.Max(newGroup.Count, oldGroup.Count);
             for (int i = 0; i < pairCount; i++)
             {
-                IndexedPlayer<NewReplayPlayerDto>? newPlayer = i < newGroup.Count ? newGroup[i] : null;
-                IndexedPlayer<OldReplayPlayerDto>? oldPlayer = i < oldGroup.Count ? oldGroup[i] : null;
+                IndexedPlayer<NormalizedReplayPlayerDto>? newPlayer = i < newGroup.Count ? newGroup[i] : null;
+                IndexedPlayer<NormalizedReplayPlayerDto>? oldPlayer = i < oldGroup.Count ? oldGroup[i] : null;
                 string matchKind = GetRosterMatchKind(newGroup.Count, oldGroup.Count);
 
                 matches.Add(new(
@@ -311,31 +357,13 @@ public static class Program
         return "ToonId";
     }
 
-    private static Dictionary<ToonKey, List<IndexedPlayer<NewReplayPlayerDto>>> GroupNewPlayersByToon(IReadOnlyList<NewReplayPlayerDto> players)
+    private static Dictionary<ToonKey, List<IndexedPlayer<NormalizedReplayPlayerDto>>> GroupPlayersByToon(IReadOnlyList<NormalizedReplayPlayerDto> players)
     {
-        Dictionary<ToonKey, List<IndexedPlayer<NewReplayPlayerDto>>> playersByToon = [];
+        Dictionary<ToonKey, List<IndexedPlayer<NormalizedReplayPlayerDto>>> playersByToon = [];
         for (int i = 0; i < players.Count; i++)
         {
-            ToonKey key = ToonKey.FromNew(players[i]);
-            if (!playersByToon.TryGetValue(key, out List<IndexedPlayer<NewReplayPlayerDto>>? group))
-            {
-                group = [];
-                playersByToon.Add(key, group);
-            }
-
-            group.Add(new(i, players[i]));
-        }
-
-        return playersByToon;
-    }
-
-    private static Dictionary<ToonKey, List<IndexedPlayer<OldReplayPlayerDto>>> GroupOldPlayersByToon(IReadOnlyList<OldReplayPlayerDto> players)
-    {
-        Dictionary<ToonKey, List<IndexedPlayer<OldReplayPlayerDto>>> playersByToon = [];
-        for (int i = 0; i < players.Count; i++)
-        {
-            ToonKey key = ToonKey.FromOld(players[i]);
-            if (!playersByToon.TryGetValue(key, out List<IndexedPlayer<OldReplayPlayerDto>>? group))
+            ToonKey key = ToonKey.FromPlayer(players[i]);
+            if (!playersByToon.TryGetValue(key, out List<IndexedPlayer<NormalizedReplayPlayerDto>>? group))
             {
                 group = [];
                 playersByToon.Add(key, group);
@@ -359,8 +387,8 @@ public static class Program
                     playerLabel,
                     "Roster",
                     "PlayerIdentity",
-                    match.NewPlayer is null ? "<missing>" : DescribeNewPlayer(match.NewPlayer),
-                    match.OldPlayer is null ? "<missing>" : DescribeOldPlayer(match.OldPlayer)));
+                    match.NewPlayer is null ? "<missing>" : DescribePlayer(match.NewPlayer),
+                    match.OldPlayer is null ? "<missing>" : DescribePlayer(match.OldPlayer)));
                 continue;
             }
 
@@ -382,15 +410,15 @@ public static class Program
                 continue;
             }
 
-            Dictionary<int, List<NewSpawnDto>> newSpawnsByBreakpoint = GroupNewSpawnsByBreakpoint(match.NewPlayer.Spawns);
-            Dictionary<int, List<OldSpawnDto>> oldSpawnsByBreakpoint = GroupOldSpawnsByBreakpoint(match.OldPlayer.Spawns);
+            Dictionary<int, List<NormalizedSpawnDto>> newSpawnsByBreakpoint = GroupSpawnsByBreakpoint(match.NewPlayer.Spawns);
+            Dictionary<int, List<NormalizedSpawnDto>> oldSpawnsByBreakpoint = GroupSpawnsByBreakpoint(match.OldPlayer.Spawns);
             int[] breakpoints = [.. newSpawnsByBreakpoint.Keys.Concat(oldSpawnsByBreakpoint.Keys).Distinct().Order()];
 
             foreach (int breakpoint in breakpoints)
             {
                 string category = $"Spawn:{FormatBreakpoint(breakpoint)}";
-                bool hasNew = newSpawnsByBreakpoint.TryGetValue(breakpoint, out List<NewSpawnDto>? newSpawns);
-                bool hasOld = oldSpawnsByBreakpoint.TryGetValue(breakpoint, out List<OldSpawnDto>? oldSpawns);
+                bool hasNew = newSpawnsByBreakpoint.TryGetValue(breakpoint, out List<NormalizedSpawnDto>? newSpawns);
+                bool hasOld = oldSpawnsByBreakpoint.TryGetValue(breakpoint, out List<NormalizedSpawnDto>? oldSpawns);
                 if (!hasNew || !hasOld)
                 {
                     differences.Add(new(
@@ -398,25 +426,25 @@ public static class Program
                         match.PlayerLabel,
                         category,
                         "Spawn",
-                        hasNew ? DescribeNewSpawn(newSpawns![^1]) : "<missing>",
-                        hasOld ? DescribeOldSpawn(oldSpawns![^1]) : "<missing>"));
+                        hasNew ? DescribeSpawn(newSpawns![^1]) : "<missing>",
+                        hasOld ? DescribeSpawn(oldSpawns![^1]) : "<missing>"));
                     continue;
                 }
 
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "SpawnCount", newSpawns!.Count, oldSpawns!.Count);
 
-                NewSpawnDto newSpawn = newSpawns[^1];
-                OldSpawnDto oldSpawn = oldSpawns[^1];
+                NormalizedSpawnDto newSpawn = newSpawns[^1];
+                NormalizedSpawnDto oldSpawn = oldSpawns[^1];
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "Income", newSpawn.Income, oldSpawn.Income);
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "GasCount", newSpawn.GasCount, oldSpawn.GasCount);
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "ArmyValue", newSpawn.ArmyValue, oldSpawn.ArmyValue);
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "KilledValue", newSpawn.KilledValue, oldSpawn.KilledValue);
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "LostValue", newSpawn.LostValue, oldSpawn.LostValue);
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "UpgradeSpent", newSpawn.UpgradeSpent, oldSpawn.UpgradeSpent);
-                int newUnitTotal = GetNewUnitTotal(newSpawn.Units);
-                int oldUnitTotal = GetOldUnitTotal(oldSpawn.Units);
-                string newUnitHash = CreateNewUnitHash(newSpawn.Units);
-                string oldUnitHash = CreateOldUnitHash(oldSpawn.Units);
+                int newUnitTotal = GetUnitTotal(newSpawn.Units);
+                int oldUnitTotal = GetUnitTotal(oldSpawn.Units);
+                string newUnitHash = CreateUnitHash(newSpawn.Units);
+                string oldUnitHash = CreateUnitHash(oldSpawn.Units);
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "UnitTotal", newUnitTotal, oldUnitTotal);
                 AddDifferenceIfChanged(differences, replayPath, match.PlayerLabel, category, "UnitPositionHash", newUnitHash, oldUnitHash);
 
@@ -428,34 +456,15 @@ public static class Program
         }
     }
 
-    private static Dictionary<int, List<NewSpawnDto>> GroupNewSpawnsByBreakpoint(IReadOnlyCollection<NewSpawnDto> spawns)
+    private static Dictionary<int, List<NormalizedSpawnDto>> GroupSpawnsByBreakpoint(IReadOnlyCollection<NormalizedSpawnDto> spawns)
     {
-        Dictionary<int, List<NewSpawnDto>> spawnsByBreakpoint = [];
-        foreach (NewSpawnDto spawn in spawns)
+        Dictionary<int, List<NormalizedSpawnDto>> spawnsByBreakpoint = [];
+        foreach (NormalizedSpawnDto spawn in spawns)
         {
-            int breakpoint = (int)spawn.Breakpoint;
-            if (!spawnsByBreakpoint.TryGetValue(breakpoint, out List<NewSpawnDto>? breakpointSpawns))
+            if (!spawnsByBreakpoint.TryGetValue(spawn.Breakpoint, out List<NormalizedSpawnDto>? breakpointSpawns))
             {
                 breakpointSpawns = [];
-                spawnsByBreakpoint.Add(breakpoint, breakpointSpawns);
-            }
-
-            breakpointSpawns.Add(spawn);
-        }
-
-        return spawnsByBreakpoint;
-    }
-
-    private static Dictionary<int, List<OldSpawnDto>> GroupOldSpawnsByBreakpoint(IReadOnlyCollection<OldSpawnDto> spawns)
-    {
-        Dictionary<int, List<OldSpawnDto>> spawnsByBreakpoint = [];
-        foreach (OldSpawnDto spawn in spawns)
-        {
-            int breakpoint = (int)spawn.Breakpoint;
-            if (!spawnsByBreakpoint.TryGetValue(breakpoint, out List<OldSpawnDto>? breakpointSpawns))
-            {
-                breakpointSpawns = [];
-                spawnsByBreakpoint.Add(breakpoint, breakpointSpawns);
+                spawnsByBreakpoint.Add(spawn.Breakpoint, breakpointSpawns);
             }
 
             breakpointSpawns.Add(spawn);
@@ -469,11 +478,11 @@ public static class Program
         string replayPath,
         string player,
         string category,
-        IReadOnlyCollection<NewUnitDto> newUnits,
-        IReadOnlyCollection<OldUnitDto> oldUnits)
+        IReadOnlyCollection<NormalizedUnitDto> newUnits,
+        IReadOnlyCollection<NormalizedUnitDto> oldUnits)
     {
-        Dictionary<UnitToken, int> newUnitCounts = CreateNewUnitTokenCounts(newUnits);
-        Dictionary<UnitToken, int> oldUnitCounts = CreateOldUnitTokenCounts(oldUnits);
+        Dictionary<UnitToken, int> newUnitCounts = CreateUnitTokenCounts(newUnits);
+        Dictionary<UnitToken, int> oldUnitCounts = CreateUnitTokenCounts(oldUnits);
 
         foreach (UnitToken token in newUnitCounts.Keys.Concat(oldUnitCounts.Keys).Distinct().Order())
         {
@@ -495,21 +504,10 @@ public static class Program
         }
     }
 
-    private static Dictionary<UnitToken, int> CreateNewUnitTokenCounts(IReadOnlyCollection<NewUnitDto> units)
+    private static Dictionary<UnitToken, int> CreateUnitTokenCounts(IReadOnlyCollection<NormalizedUnitDto> units)
     {
         Dictionary<UnitToken, int> counts = [];
-        foreach (NewUnitDto unit in units)
-        {
-            AddUnitTokens(counts, unit.Name, unit.Positions);
-        }
-
-        return counts;
-    }
-
-    private static Dictionary<UnitToken, int> CreateOldUnitTokenCounts(IReadOnlyCollection<OldUnitDto> units)
-    {
-        Dictionary<UnitToken, int> counts = [];
-        foreach (OldUnitDto unit in units)
+        foreach (NormalizedUnitDto unit in units)
         {
             AddUnitTokens(counts, unit.Name, unit.Positions);
         }
@@ -554,30 +552,6 @@ public static class Program
         }
     }
 
-    private static void AddEnumDifferenceIfChanged(
-        List<Difference> differences,
-        string replayPath,
-        string player,
-        string category,
-        string field,
-        int newValue,
-        string newName,
-        int oldValue,
-        string oldName)
-    {
-        if (newValue != oldValue)
-        {
-            differences.Add(new(
-                replayPath,
-                player,
-                category,
-                field,
-                $"{newValue}:{newName}",
-                $"{oldValue}:{oldName}",
-                FormatIntDelta(newValue, oldValue)));
-        }
-    }
-
     private static string FormatDelta<T>(T newValue, T oldValue)
     {
         if (newValue is int newInt && oldValue is int oldInt)
@@ -591,48 +565,33 @@ public static class Program
     private static string FormatIntDelta(int newValue, int oldValue)
         => (newValue - oldValue).ToString("+0;-0;0", CultureInfo.InvariantCulture);
 
-    private static string DescribeNewPlayer(NewReplayPlayerDto player)
-        => $"{player.Name} team={player.TeamId} pos={player.GamePos} toon={FormatNewToon(player)}";
+    private static string DescribePlayer(NormalizedReplayPlayerDto player)
+        => $"{player.Name} team={player.TeamId} pos={player.GamePos} toon={FormatToon(player.ToonId)}";
 
-    private static string DescribeOldPlayer(OldReplayPlayerDto player)
-        => $"{player.Name} team={player.TeamId} pos={player.GamePos} toon={FormatOldToon(player)}";
+    private static string DescribeSpawn(NormalizedSpawnDto spawn)
+        => $"income={spawn.Income} army={spawn.ArmyValue} kills={spawn.KilledValue} units={GetUnitTotal(spawn.Units)}";
 
-    private static string DescribeNewSpawn(NewSpawnDto spawn)
-        => $"income={spawn.Income} army={spawn.ArmyValue} kills={spawn.KilledValue} units={GetNewUnitTotal(spawn.Units)}";
-
-    private static string DescribeOldSpawn(OldSpawnDto spawn)
-        => $"income={spawn.Income} army={spawn.ArmyValue} kills={spawn.KilledValue} units={GetOldUnitTotal(spawn.Units)}";
-
-    private static string FormatNewToon(NewReplayPlayerDto player)
-        => $"{player.Player.ToonId.Region}:{player.Player.ToonId.Realm}:{player.Player.ToonId.Id}";
-
-    private static string FormatOldToon(OldReplayPlayerDto player)
-        => $"{player.Player.ToonId.Region}:{player.Player.ToonId.Realm}:{player.Player.ToonId.Id}";
+    private static string FormatToon(NormalizedToonId toonId)
+        => $"{toonId.Region}:{toonId.Realm}:{toonId.Id}";
 
     private static string FormatBreakpoint(int value)
-        => Enum.IsDefined(typeof(NewBreakpoint), value) ? ((NewBreakpoint)value).ToString() : value.ToString(CultureInfo.InvariantCulture);
-
-    private static int GetNewUnitTotal(IReadOnlyCollection<NewUnitDto> units)
-        => units.Sum(static unit => unit.Count);
-
-    private static int GetOldUnitTotal(IReadOnlyCollection<OldUnitDto> units)
-        => units.Sum(static unit => unit.Count);
-
-    private static string CreateNewUnitHash(IReadOnlyCollection<NewUnitDto> units)
-    {
-        StringBuilder builder = new();
-        foreach (NewUnitDto unit in units.OrderBy(static unit => unit.Name, StringComparer.Ordinal))
+        => value switch
         {
-            AppendUnit(builder, unit.Name, unit.Count, unit.Positions);
-        }
+            0 => "None",
+            1 => "Min5",
+            2 => "Min10",
+            3 => "Min15",
+            4 => "All",
+            _ => value.ToString(CultureInfo.InvariantCulture),
+        };
 
-        return CreateShortHash(builder.ToString());
-    }
+    private static int GetUnitTotal(IReadOnlyCollection<NormalizedUnitDto> units)
+        => units.Sum(static unit => unit.Count);
 
-    private static string CreateOldUnitHash(IReadOnlyCollection<OldUnitDto> units)
+    private static string CreateUnitHash(IReadOnlyCollection<NormalizedUnitDto> units)
     {
         StringBuilder builder = new();
-        foreach (OldUnitDto unit in units.OrderBy(static unit => unit.Name, StringComparer.Ordinal))
+        foreach (NormalizedUnitDto unit in units.OrderBy(static unit => unit.Name, StringComparer.Ordinal))
         {
             AppendUnit(builder, unit.Name, unit.Count, unit.Positions);
         }
@@ -668,40 +627,56 @@ public static class Program
         long maxReplaySizeBytes,
         int iterations,
         int candidateCount,
+        CompareWorkerResult newResult,
+        CompareWorkerResult oldResult,
         IReadOnlyCollection<ReplayComparison> comparisons,
         IReadOnlyCollection<ReplayError> errors)
     {
-        TimeSpan newTotal = TimeSpan.FromTicks(comparisons.Sum(static comparison => comparison.NewElapsed.Ticks));
-        TimeSpan oldTotal = TimeSpan.FromTicks(comparisons.Sum(static comparison => comparison.OldElapsed.Ticks));
-        int measuredParses = comparisons.Sum(static comparison => comparison.Iterations);
-        double newAverageMs = measuredParses == 0 ? 0D : newTotal.TotalMilliseconds / measuredParses;
-        double oldAverageMs = measuredParses == 0 ? 0D : oldTotal.TotalMilliseconds / measuredParses;
-        double deltaMs = newAverageMs - oldAverageMs;
-        double deltaPercent = oldAverageMs == 0D ? 0D : (deltaMs / oldAverageMs) * 100D;
-
         Console.WriteLine("Old parser comparison sample");
         Console.WriteLine("Input: {0}", inputPath);
         Console.WriteLine("Pattern: {0}", ReplaySearchPattern);
         Console.WriteLine("Max size: {0:N0} bytes", maxReplaySizeBytes);
         Console.WriteLine("Decode threads: {0:N0}", Math.Min(DecodeThreads, Math.Max(1, candidateCount)));
         Console.WriteLine("Parse iterations: {0:N0}", iterations);
+        Console.WriteLine("New stack: {0} + s2protocol.NET {1}", newResult.ParserName, newResult.S2ProtocolVersion);
+        Console.WriteLine("Old stack: {0} + s2protocol.NET {1}", oldResult.ParserName, oldResult.S2ProtocolVersion);
         Console.WriteLine();
         Console.WriteLine("Candidates: {0:N0}", candidateCount);
-        Console.WriteLine("Decoded: {0:N0}", comparisons.Count + errors.Count(static error => !string.Equals(error.ErrorType, "DecodeError", StringComparison.Ordinal)));
+        Console.WriteLine("New decoded/parsed: {0:N0}/{1:N0}", newResult.Replays.Count + CountErrors(newResult, "DecodeError", false), newResult.Replays.Count);
+        Console.WriteLine("Old decoded/parsed: {0:N0}/{1:N0}", oldResult.Replays.Count + CountErrors(oldResult, "DecodeError", false), oldResult.Replays.Count);
         Console.WriteLine("Compared: {0:N0}", comparisons.Count);
-        Console.WriteLine("Parse errors: {0:N0}", errors.Count(static error => !string.Equals(error.ErrorType, "DecodeError", StringComparison.Ordinal)));
-        Console.WriteLine("Decode errors: {0:N0}", errors.Count(static error => string.Equals(error.ErrorType, "DecodeError", StringComparison.Ordinal)));
+        Console.WriteLine("Errors: {0:N0}", errors.Count);
         Console.WriteLine("Roster-diff replays: {0:N0}", comparisons.Count(static comparison => comparison.RosterDifferences.Count > 0));
         Console.WriteLine("Spawn-diff replays: {0:N0}", comparisons.Count(static comparison => comparison.SpawnDifferences.Count > 0));
         Console.WriteLine("Roster differences: {0:N0}", comparisons.Sum(static comparison => comparison.RosterDifferences.Count));
         Console.WriteLine("Spawn differences: {0:N0}", comparisons.Sum(static comparison => comparison.SpawnDifferences.Count));
         Console.WriteLine();
-        Console.WriteLine("Parse time (decode excluded):");
+        PrintTimingComparison("Decode time", newResult.DecodeElapsedTicks, oldResult.DecodeElapsedTicks, Math.Max(1, candidateCount));
+        PrintTimingComparison("Parse time (decode excluded)", newResult.ParseElapsedTicks, oldResult.ParseElapsedTicks, Math.Max(1, comparisons.Count * iterations));
+        PrintTimingComparison("Decode + parse one-pass time", newResult.OnePassElapsedTicks, oldResult.OnePassElapsedTicks, Math.Max(1, candidateCount));
+        Console.WriteLine();
+    }
+
+    private static int CountErrors(CompareWorkerResult result, string errorType, bool equal)
+        => result.Errors.Count(error => string.Equals(error.ErrorType, errorType, StringComparison.Ordinal) == equal);
+
+    private static void PrintTimingComparison(string title, long newTicks, long oldTicks, int averageDivisor)
+    {
+        TimeSpan newTotal = TimeSpan.FromTicks(newTicks);
+        TimeSpan oldTotal = TimeSpan.FromTicks(oldTicks);
+        double newAverageMs = newTotal.TotalMilliseconds / averageDivisor;
+        double oldAverageMs = oldTotal.TotalMilliseconds / averageDivisor;
+        double savedMs = oldTotal.TotalMilliseconds - newTotal.TotalMilliseconds;
+        double savedPercent = oldTotal.TotalMilliseconds == 0D ? 0D : savedMs / oldTotal.TotalMilliseconds * 100D;
+        double speedup = newTotal.TotalMilliseconds == 0D ? 0D : oldTotal.TotalMilliseconds / newTotal.TotalMilliseconds;
+
+        Console.WriteLine(title + ":");
         Console.WriteLine("  New total: {0:N2} ms", newTotal.TotalMilliseconds);
         Console.WriteLine("  Old total: {0:N2} ms", oldTotal.TotalMilliseconds);
         Console.WriteLine("  New avg: {0:N2} ms", newAverageMs);
         Console.WriteLine("  Old avg: {0:N2} ms", oldAverageMs);
-        Console.WriteLine("  Avg delta: {0:+0.00;-0.00;0.00} ms ({1:+0.00;-0.00;0.00}%)", deltaMs, deltaPercent);
+        Console.WriteLine("  Saved: {0:+0.00;-0.00;0.00} ms ({1:+0.00;-0.00;0.00}%)", savedMs, savedPercent);
+        Console.WriteLine("  Speedup: {0:N2}x", speedup);
         Console.WriteLine();
     }
 
@@ -751,31 +726,53 @@ public static class Program
         }
     }
 
+    private static ReplayError PrefixError(CompareWorkerResult result, ReplayError error)
+        => new(error.Path, $"{result.StackName}:{error.ErrorType}", error.Message);
+
+    private static async Task<T?> ReadJsonAsync<T>(string path)
+    {
+        await using FileStream stream = File.OpenRead(path);
+        return await JsonSerializer.DeserializeAsync<T>(stream);
+    }
+
+    private static async Task WriteJsonAsync<T>(string path, T value)
+    {
+        await using FileStream stream = File.Create(path);
+        await JsonSerializer.SerializeAsync(stream, value);
+    }
+
+    private static void TryDeleteDirectory(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
     private sealed record ReplayComparison(
         string ReplayPath,
-        TimeSpan NewElapsed,
-        TimeSpan OldElapsed,
-        int Iterations,
         List<Difference> RosterDifferences,
         List<Difference> SpawnDifferences)
     {
         public bool HasDifferences => RosterDifferences.Count > 0 || SpawnDifferences.Count > 0;
     }
 
-    private sealed record ParseTimingResult(
-        NewReplayDto NewDto,
-        OldReplayDto OldDto,
-        TimeSpan NewElapsed,
-        TimeSpan OldElapsed,
-        int Iterations);
-
     private sealed record PlayerMatch(
         int? NewIndex,
         int? OldIndex,
         string MatchKind,
         ToonKey ToonKey,
-        NewReplayPlayerDto? NewPlayer,
-        OldReplayPlayerDto? OldPlayer)
+        NormalizedReplayPlayerDto? NewPlayer,
+        NormalizedReplayPlayerDto? OldPlayer)
     {
         public string PlayerLabel
         {
@@ -808,11 +805,8 @@ public static class Program
 
     private readonly record struct ToonKey(int Region, int Realm, int Id) : IComparable<ToonKey>
     {
-        public static ToonKey FromNew(NewReplayPlayerDto player)
-            => new(player.Player.ToonId.Region, player.Player.ToonId.Realm, player.Player.ToonId.Id);
-
-        public static ToonKey FromOld(OldReplayPlayerDto player)
-            => new(player.Player.ToonId.Region, player.Player.ToonId.Realm, player.Player.ToonId.Id);
+        public static ToonKey FromPlayer(NormalizedReplayPlayerDto player)
+            => new(player.ToonId.Region, player.ToonId.Realm, player.ToonId.Id);
 
         public int CompareTo(ToonKey other)
         {
@@ -838,6 +832,4 @@ public static class Program
         string NewValue,
         string OldValue,
         string Delta = "");
-
-    private sealed record ReplayError(string Path, string ErrorType, string Message);
 }

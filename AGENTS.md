@@ -19,9 +19,9 @@ Use this file as the lightweight project briefing before making changes.
 - `src/Sc2DirectStrike.Tests` - MSTest test project with replay fixtures.
 - `src/Sc2DirectStrike.Tests/testdata` - sample `.SC2Replay` files used by tests and benchmarks.
 - `src/Sc2DirectStrike.Benchmarks` - BenchmarkDotNet project for parser replay benchmarks.
-- `src/Sc2DirectStrike.DuplicateSample` - sample tool for duplicate replay analysis.
-- `src/Sc2DirectStrike.IncomeSample` - sample tool for replay income calculations.
-- `src/Sc2DirectStrike.ParserCompareSample` - sample tool for parser comparison workflows.
+- `src/samples/Sc2DirectStrike.DuplicateSample` - sample tool for duplicate replay analysis.
+- `src/samples/Sc2DirectStrike.IncomeSample` - sample tool for replay income calculations.
+- `src/samples/Sc2DirectStrike.ParserCompareSample` - sample tool for parser comparison workflows.
 - `src/Sc2DirectStrike.WasmSmoke` - WebAssembly smoke project for parser compatibility checks.
 
 ## Setup

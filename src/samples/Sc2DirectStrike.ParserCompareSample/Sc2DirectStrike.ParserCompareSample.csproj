@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Sc2DirectStrike.ParserCompareSample.NewStack\Sc2DirectStrike.ParserCompareSample.NewStack.csproj" ReferenceOutputAssembly="false" />
+    <ProjectReference Include="..\Sc2DirectStrike.ParserCompareSample.OldStack\Sc2DirectStrike.ParserCompareSample.OldStack.csproj" ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+</Project>
