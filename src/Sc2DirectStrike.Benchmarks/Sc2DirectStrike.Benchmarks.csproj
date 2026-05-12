@@ -10,7 +10,6 @@
 
   <ItemGroup>
     <PackageReference Include="BenchmarkDotNet" Version="0.15.8" />
-    <PackageReference Include="s2protocol.NET" Version="0.9.3" />
   </ItemGroup>
 
   <ItemGroup>

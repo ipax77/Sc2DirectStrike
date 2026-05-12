@@ -34,7 +34,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="s2protocol.NET" Version="0.9.3" />
+    <PackageReference Include="s2protocol.NET" Version="0.9.4" />
   </ItemGroup>
 
   <ItemGroup>
