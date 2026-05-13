@@ -5,16 +5,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Description>SCII DirectStrike Replay parser</Description>
-    <PackageProjectUrl>https://github.com/ipax77/dsstats</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/ipax77/Sc2DirectStrike</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <RepositoryUrl>https://github.com/ipax77/dsstats</RepositoryUrl>
+    <RepositoryUrl>https://github.com/ipax77/Sc2DirectStrike</RepositoryUrl>
     <PackageTags>DirectStrike;SCII;parser</PackageTags>
-    <AssemblyVersion>0.1.0.0</AssemblyVersion>
+    <AssemblyVersion>0.2.0.0</AssemblyVersion>
     <Owners>Philipp Hetzner</Owners>
     <Authors>Philipp Hetzner</Authors>
-    <Version>0.1.0</Version>
-	  <FileVersion>0.1.0.0</FileVersion>
-    <PackageVersion>0.1.0</PackageVersion>
+    <Version>0.2.0</Version>
+	  <FileVersion>0.2.0.0</FileVersion>
+    <PackageVersion>0.2.0</PackageVersion>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>    
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
@@ -30,7 +30,7 @@
     <LangVersion>latest</LangVersion>
     <WarningsNotAsErrors></WarningsNotAsErrors>
     <DisabledWarnings>1591</DisabledWarnings>
-    <NoWarn>1591</NoWarn>
+    <NoWarn>1591, IDE0160, IDE0058, IDE0008, IDE0072, IDE0010</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
@@ -41,6 +41,13 @@
     <AssemblyAttribute Include="System.CLSCompliantAttribute">
         <_Parameter1>false</_Parameter1>
     </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md">
+      <Pack>True</Pack>
+      <PackagePath>.</PackagePath>
+    </None>
   </ItemGroup>
 
 </Project>

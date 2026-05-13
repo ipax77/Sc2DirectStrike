@@ -51,6 +51,18 @@ public class ReplayParseBenchmarks
         return parsedReplays;
     }
 
+    [Benchmark]
+    public ReplayDto[] ParseDtoStressReplays()
+    {
+        ReplayDto[] replayDtos = new ReplayDto[replays.Length];
+        for (int i = 0; i < replays.Length; i++)
+        {
+            replayDtos[i] = Sc2DirectStrikeParser.ParseDto(replays[i]);
+        }
+
+        return replayDtos;
+    }
+
     public static void PrintReplayInventory()
     {
         Console.WriteLine("Stress replay inventory:");

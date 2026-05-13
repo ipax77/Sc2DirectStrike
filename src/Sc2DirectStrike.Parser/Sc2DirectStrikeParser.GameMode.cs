@@ -52,11 +52,11 @@ public static partial class Sc2DirectStrikeParser
             {
                 return GameMode.BrawlStandard;
             }
-            else if (mode == "GameModeHeroicCommanders" || mode == "GameModeCommandersHeroic")
+            else if (mode is "GameModeHeroicCommanders" or "GameModeCommandersHeroic")
             {
                 return GameMode.CommandersHeroic;
             }
-            else if (mode == "GameModeCommanders" || mode == "MutationCommanders")
+            else if (mode is "GameModeCommanders" or "MutationCommanders")
             {
                 isCommanders = true;
             }
