@@ -61,7 +61,7 @@ configuration.
 - Target framework: `net10.0`.
 - Language version: `latest`.
 - Nullable reference types and implicit usings are enabled.
-- Parser dependency: `s2protocol.NET` `0.9.2`.
+- Parser dependency: `s2protocol.NET` `0.9.4`.
 - Test framework: MSTest `4.0.2`.
 - Benchmark framework: BenchmarkDotNet `0.15.8`.
 - WebAssembly smoke dependency: `Microsoft.AspNetCore.Components.WebAssembly` `10.0.7`.
