@@ -306,36 +306,20 @@ public static partial class Sc2DirectStrikeParser
         return orderedTrackerEvents;
     }
 
-    private static bool IsOrderedByGameloop(IReadOnlyList<SUnitBornEvent> events)
+    private static bool IsOrderedByGameloop<T>(IReadOnlyList<T> events)
+        where T : TrackerEvent
     {
-        int previousGameloop = 0;
-        for (int i = 0; i < events.Count; i++)
+        for (int i = 1; i < events.Count; i++)
         {
-            int gameloop = events[i].Gameloop;
-            if (i > 0 && gameloop < previousGameloop)
+
+            if (events[i].Gameloop < events[i - 1].Gameloop)
             {
+
                 return false;
             }
 
-            previousGameloop = gameloop;
         }
 
-        return true;
-    }
-
-    private static bool IsOrderedByGameloop(IReadOnlyList<SUnitTypeChangeEvent> events)
-    {
-        int previousGameloop = 0;
-        for (int i = 0; i < events.Count; i++)
-        {
-            int gameloop = events[i].Gameloop;
-            if (i > 0 && gameloop < previousGameloop)
-            {
-                return false;
-            }
-
-            previousGameloop = gameloop;
-        }
 
         return true;
     }
@@ -1190,13 +1174,21 @@ public static partial class Sc2DirectStrikeParser
             }
 
             bool intersects = (end.Y > position.Y) != (start.Y > position.Y)
-                && position.X < ((double)(start.X - end.X) * (position.Y - end.Y) / (start.Y - end.Y)) + end.X;
+                && IsLeftOfIntersection(start, end, position);
             if (intersects)
             {
                 inside = !inside;
             }
 
             return false;
+        }
+
+        private static bool IsLeftOfIntersection(Pos start, Pos end, Pos position)
+        {
+            int dy = start.Y - end.Y;
+            long left = ((long)position.X - end.X) * dy;
+            long right = (long)(start.X - end.X) * (position.Y - end.Y);
+            return dy > 0 ? left < right : left > right;
         }
 
         private static bool IsOnSegment(Pos start, Pos end, Pos position)
