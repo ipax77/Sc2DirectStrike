@@ -5,9 +5,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <Description>SCII DirectStrike Replay parser</Description>
-    <PackageProjectUrl>https://github.com/ipax77/dsstats</PackageProjectUrl>
+    <PackageProjectUrl>https://github.com/ipax77/Sc2DirectStrike</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
-    <RepositoryUrl>https://github.com/ipax77/dsstats</RepositoryUrl>
+    <RepositoryUrl>https://github.com/ipax77/Sc2DirectStrike</RepositoryUrl>
     <PackageTags>DirectStrike;SCII;parser</PackageTags>
     <AssemblyVersion>0.2.0.0</AssemblyVersion>
     <Owners>Philipp Hetzner</Owners>
