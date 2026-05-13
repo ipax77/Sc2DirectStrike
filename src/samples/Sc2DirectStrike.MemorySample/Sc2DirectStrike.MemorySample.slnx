@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="../../Sc2DirectStrike.Parser/Sc2DirectStrike.Parser.csproj" />
+  <Project Path="Sc2DirectStrike.MemorySample.csproj" />
+</Solution>
