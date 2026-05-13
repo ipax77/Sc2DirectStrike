@@ -93,11 +93,6 @@ public sealed class MiddleControlHelper
 
     private TimeSpan Clamp(TimeSpan atTime)
     {
-        if (atTime <= TimeSpan.Zero)
-        {
-            return TimeSpan.Zero;
-        }
-
-        return atTime > duration ? duration : atTime;
+        return atTime <= TimeSpan.Zero ? TimeSpan.Zero : atTime > duration ? duration : atTime;
     }
 }

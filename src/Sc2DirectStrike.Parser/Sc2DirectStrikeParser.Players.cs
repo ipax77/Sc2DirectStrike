@@ -64,12 +64,9 @@ public static partial class Sc2DirectStrikeParser
 
     private static MetadataPlayer? GetMetadataPlayer(MetadataPlayer[] metadataPlayers, Dictionary<int, MetadataPlayer> metadataPlayersById, int detailsPlayerIndex)
     {
-        if (metadataPlayersById.TryGetValue(detailsPlayerIndex + 1, out MetadataPlayer? playerById))
-        {
-            return playerById;
-        }
-
-        return detailsPlayerIndex < metadataPlayers.Length
+        return metadataPlayersById.TryGetValue(detailsPlayerIndex + 1, out MetadataPlayer? playerById)
+            ? playerById
+            : detailsPlayerIndex < metadataPlayers.Length
             ? metadataPlayers[detailsPlayerIndex]
             : null;
     }
@@ -185,12 +182,7 @@ public static partial class Sc2DirectStrikeParser
         ReadOnlySpan<char> type = remaining[..secondSeparator];
         remaining = remaining[(secondSeparator + 1)..];
         int thirdSeparator = remaining.IndexOf('-');
-        if (thirdSeparator <= 0 || remaining[(thirdSeparator + 1)..].IndexOf('-') >= 0)
-        {
-            return false;
-        }
-
-        return type.SequenceEqual("S2")
+        return thirdSeparator > 0 && remaining[(thirdSeparator + 1)..].IndexOf('-') < 0 && type.SequenceEqual("S2")
             && int.TryParse(value[..firstSeparator], out region)
             && int.TryParse(remaining[..thirdSeparator], out realm)
             && int.TryParse(remaining[(thirdSeparator + 1)..], out id);
@@ -270,38 +262,23 @@ public static partial class Sc2DirectStrikeParser
     private static Race ParseRace(string? race)
     {
         ReadOnlySpan<char> value = race.AsSpan().Trim();
-        if (value.Equals("Rand", StringComparison.OrdinalIgnoreCase) || value.Equals("Random", StringComparison.OrdinalIgnoreCase))
-        {
-            return Race.Random;
-        }
-
-        if (value.Equals("Terr", StringComparison.OrdinalIgnoreCase) || value.Equals("Terran", StringComparison.OrdinalIgnoreCase))
-        {
-            return Race.Terran;
-        }
-
-        if (value.Equals("Prot", StringComparison.OrdinalIgnoreCase) || value.Equals("Protoss", StringComparison.OrdinalIgnoreCase))
-        {
-            return Race.Protoss;
-        }
-
-        return value.Equals("Zerg", StringComparison.OrdinalIgnoreCase) ? Race.Zerg : Race.None;
+        return value.Equals("Rand", StringComparison.OrdinalIgnoreCase) || value.Equals("Random", StringComparison.OrdinalIgnoreCase)
+            ? Race.Random
+            : value.Equals("Terr", StringComparison.OrdinalIgnoreCase) || value.Equals("Terran", StringComparison.OrdinalIgnoreCase)
+            ? Race.Terran
+            : value.Equals("Prot", StringComparison.OrdinalIgnoreCase) || value.Equals("Protoss", StringComparison.OrdinalIgnoreCase)
+            ? Race.Protoss
+            : value.Equals("Zerg", StringComparison.OrdinalIgnoreCase) ? Race.Zerg : Race.None;
     }
 
     private static PlayerResult ParsePlayerResult(string? result)
     {
         ReadOnlySpan<char> value = result.AsSpan().Trim();
-        if (value.Equals("Win", StringComparison.OrdinalIgnoreCase))
-        {
-            return PlayerResult.Win;
-        }
-
-        if (value.Equals("Loss", StringComparison.OrdinalIgnoreCase))
-        {
-            return PlayerResult.Loss;
-        }
-
-        return value.Equals("Undecided", StringComparison.OrdinalIgnoreCase) ? PlayerResult.Undecided : PlayerResult.None;
+        return value.Equals("Win", StringComparison.OrdinalIgnoreCase)
+            ? PlayerResult.Win
+            : value.Equals("Loss", StringComparison.OrdinalIgnoreCase)
+            ? PlayerResult.Loss
+            : value.Equals("Undecided", StringComparison.OrdinalIgnoreCase) ? PlayerResult.Undecided : PlayerResult.None;
     }
 
     private static PlayerResult ParsePlayerResult(int result)

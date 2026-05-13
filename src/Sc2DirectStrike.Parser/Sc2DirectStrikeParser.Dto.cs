@@ -1,4 +1,3 @@
-using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text;
 using s2protocol.NET;
@@ -320,11 +319,7 @@ public static partial class Sc2DirectStrikeParser
 
     private static List<UpgradeDto> CreateUpgradeDtos(DirectStrikePlayer player)
     {
-        List<KeyValuePair<string, TimeSpan>> upgrades = new(player.Upgrades.Count);
-        foreach (KeyValuePair<string, TimeSpan> upgrade in player.Upgrades)
-        {
-            upgrades.Add(upgrade);
-        }
+        List<KeyValuePair<string, TimeSpan>> upgrades = [.. player.Upgrades];
 
         upgrades.Sort(static (left, right) =>
         {
@@ -604,22 +599,14 @@ public static partial class Sc2DirectStrikeParser
     private static string GetReplayVersion(Sc2Replay replay)
     {
         string metadataVersion = replay.Metadata?.GameVersion?.ToString() ?? string.Empty;
-        if (!string.IsNullOrEmpty(metadataVersion))
-        {
-            return metadataVersion;
-        }
-
-        return replay.Header is Header header ? header.Version.ToString() : string.Empty;
+        return !string.IsNullOrEmpty(metadataVersion)
+            ? metadataVersion
+            : replay.Header is Header header ? header.Version.ToString() : string.Empty;
     }
 
     private static int ParseBaseBuild(string baseBuild, Sc2Replay replay)
     {
-        if (int.TryParse(baseBuild, out int parsedBaseBuild))
-        {
-            return parsedBaseBuild;
-        }
-
-        return replay.Header is Header header ? header.BaseBuild : 0;
+        return int.TryParse(baseBuild, out int parsedBaseBuild) ? parsedBaseBuild : replay.Header is Header header ? header.BaseBuild : 0;
     }
 
     private readonly record struct BreakpointDefinition(Breakpoint Breakpoint, int Gameloop);

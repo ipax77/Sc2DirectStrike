@@ -1128,14 +1128,9 @@ public static partial class Sc2DirectStrikeParser
 
         private static bool IsOnSegment(Pos start, Pos end, Pos position)
         {
-            long crossProduct = ((long)position.Y - start.Y) * (end.X - start.X)
-                - ((long)position.X - start.X) * (end.Y - start.Y);
-            if (crossProduct != 0)
-            {
-                return false;
-            }
-
-            return position.X >= Math.Min(start.X, end.X)
+            long crossProduct = (((long)position.Y - start.Y) * (end.X - start.X))
+                - (((long)position.X - start.X) * (end.Y - start.Y));
+            return crossProduct == 0 && position.X >= Math.Min(start.X, end.X)
                 && position.X <= Math.Max(start.X, end.X)
                 && position.Y >= Math.Min(start.Y, end.Y)
                 && position.Y <= Math.Max(start.Y, end.Y);
