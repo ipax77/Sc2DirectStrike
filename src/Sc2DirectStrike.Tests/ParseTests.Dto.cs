@@ -1,5 +1,6 @@
 using s2protocol.NET;
 using Sc2DirectStrike.Parser;
+using System.Text.Json;
 
 namespace Sc2DirectStrike.Tests;
 
@@ -19,6 +20,20 @@ public sealed partial class ParseTests
     ];
 
     private static readonly int[] ExpectedDtoRefineryCosts = [150, 225, 300, 375, 500];
+
+    [TestMethod]
+    [DataRow("testdata/Direct Strike (10060).SC2Replay")]
+    [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
+    public async Task ParseDtoOverloadMatchesStandardParseDto(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+        DirectStrikeReplay parsedReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        ReplayDto standardDto = Sc2DirectStrikeParser.ParseDto(replay);
+        ReplayDto onePassDto = Sc2DirectStrikeParser.ParseDto(replay, parsedReplay);
+
+        Assert.AreEqual(JsonSerializer.Serialize(standardDto), JsonSerializer.Serialize(onePassDto));
+    }
 
     [TestMethod]
     [DataRow("testdata/Direct Strike (10060).SC2Replay")]

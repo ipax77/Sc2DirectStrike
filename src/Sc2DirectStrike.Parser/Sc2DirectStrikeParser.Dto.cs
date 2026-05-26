@@ -24,6 +24,14 @@ public static partial class Sc2DirectStrikeParser
         ArgumentNullException.ThrowIfNull(replay);
 
         DirectStrikeReplay directStrikeReplay = Parse(replay);
+        return ParseDto(replay, directStrikeReplay);
+    }
+
+    public static ReplayDto ParseDto(Sc2Replay replay, DirectStrikeReplay directStrikeReplay)
+    {
+        ArgumentNullException.ThrowIfNull(replay);
+        ArgumentNullException.ThrowIfNull(directStrikeReplay);
+
         Dictionary<DirectStrikePlayer, MessageCounts> messageCountsByPlayer = GetMessageCountsByPlayer(replay, directStrikeReplay);
         int compatHashGameloop = GetCompatHashGameloop(directStrikeReplay);
         List<ReplayPlayerDto> players = new(directStrikeReplay.Players.Count);
