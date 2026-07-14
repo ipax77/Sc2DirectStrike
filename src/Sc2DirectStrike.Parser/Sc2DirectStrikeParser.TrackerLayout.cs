@@ -231,7 +231,7 @@ public static partial class Sc2DirectStrikeParser
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag)
     {
         HashSet<string>?[] builtUnitNamesByPlayer = new HashSet<string>?[playerContexts.Length];
-        HashSet<string>?[] allowedSpawnUnitNamesByPlayer = new HashSet<string>?[playerContexts.Length];
+        HashSet<string>?[] canonicalSpawnUnitNamesByPlayer = new HashSet<string>?[playerContexts.Length];
         List<TrackedSpawnUnit>?[] spawnUnitsByPlayer = new List<TrackedSpawnUnit>?[playerContexts.Length];
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaUnitOwnerIndexesByTag = [];
         Polygon?[] stagingAreasByPlayer = GetStagingAreasByPlayer(playerLayouts);
@@ -246,10 +246,11 @@ public static partial class Sc2DirectStrikeParser
                 orderedUnitBornEvents,
                 orderedUnitTypeChangeEvents,
                 playerContextsByControlPlayerId,
+                playerContexts,
                 stagingAreasByPlayer,
                 buildAreaUnitOwnerIndexesByTag,
                 builtUnitNamesByPlayer,
-                allowedSpawnUnitNamesByPlayer,
+                canonicalSpawnUnitNamesByPlayer,
                 spawnUnitsByPlayer,
                 refineriesByTag);
         }
@@ -259,10 +260,11 @@ public static partial class Sc2DirectStrikeParser
             TrackSpawnEvents(
                 orderedTrackerEvents,
                 playerContextsByControlPlayerId,
+                playerContexts,
                 stagingAreasByPlayer,
                 buildAreaUnitOwnerIndexesByTag,
                 builtUnitNamesByPlayer,
-                allowedSpawnUnitNamesByPlayer,
+                canonicalSpawnUnitNamesByPlayer,
                 spawnUnitsByPlayer,
                 refineriesByTag);
         }
@@ -328,10 +330,11 @@ public static partial class Sc2DirectStrikeParser
         IReadOnlyList<SUnitBornEvent> unitBornEvents,
         IReadOnlyList<SUnitTypeChangeEvent> unitTypeChangeEvents,
         Dictionary<int, PlayerContextIndex> playerContextsByControlPlayerId,
+        DirectStrikePlayerContext[] playerContexts,
         Polygon?[] stagingAreasByPlayer,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaUnitOwnerIndexesByTag,
         HashSet<string>?[] builtUnitNamesByPlayer,
-        HashSet<string>?[] allowedSpawnUnitNamesByPlayer,
+        HashSet<string>?[] canonicalSpawnUnitNamesByPlayer,
         List<TrackedSpawnUnit>?[] spawnUnitsByPlayer,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag)
     {
@@ -362,18 +365,18 @@ public static partial class Sc2DirectStrikeParser
                     stagingAreasByPlayer,
                     buildAreaUnitOwnerIndexesByTag,
                     builtUnitNamesByPlayer,
-                    allowedSpawnUnitNamesByPlayer,
+                    canonicalSpawnUnitNamesByPlayer,
                     spawnCandidates);
             }
 
             for (int i = typeChangeStart; i < typeChangeIndex; i++)
             {
-                TrackUnitTypeChangeEvent(unitTypeChangeEvents[i], buildAreaUnitOwnerIndexesByTag, builtUnitNamesByPlayer, allowedSpawnUnitNamesByPlayer, refineriesByTag);
+                TrackUnitTypeChangeEvent(unitTypeChangeEvents[i], playerContexts, buildAreaUnitOwnerIndexesByTag, builtUnitNamesByPlayer, canonicalSpawnUnitNamesByPlayer, refineriesByTag);
             }
 
             for (int i = 0; i < spawnCandidates.Count; i++)
             {
-                TrackSpawnUnit(spawnCandidates[i], allowedSpawnUnitNamesByPlayer, spawnUnitsByPlayer);
+                TrackSpawnUnit(spawnCandidates[i], playerContexts, canonicalSpawnUnitNamesByPlayer, spawnUnitsByPlayer);
             }
         }
     }
@@ -402,10 +405,11 @@ public static partial class Sc2DirectStrikeParser
     private static void TrackSpawnEvents(
         List<OrderedSpawnTrackerEvent> orderedTrackerEvents,
         Dictionary<int, PlayerContextIndex> playerContextsByControlPlayerId,
+        DirectStrikePlayerContext[] playerContexts,
         Polygon?[] stagingAreasByPlayer,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaUnitOwnerIndexesByTag,
         HashSet<string>?[] builtUnitNamesByPlayer,
-        HashSet<string>?[] allowedSpawnUnitNamesByPlayer,
+        HashSet<string>?[] canonicalSpawnUnitNamesByPlayer,
         List<TrackedSpawnUnit>?[] spawnUnitsByPlayer,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag)
     {
@@ -431,7 +435,7 @@ public static partial class Sc2DirectStrikeParser
                         stagingAreasByPlayer,
                         buildAreaUnitOwnerIndexesByTag,
                         builtUnitNamesByPlayer,
-                        allowedSpawnUnitNamesByPlayer,
+                        canonicalSpawnUnitNamesByPlayer,
                         spawnCandidates);
                 }
             }
@@ -440,13 +444,13 @@ public static partial class Sc2DirectStrikeParser
             {
                 if (orderedTrackerEvents[i].TypeChangeEvent is { } typeChangeEvent)
                 {
-                    TrackUnitTypeChangeEvent(typeChangeEvent, buildAreaUnitOwnerIndexesByTag, builtUnitNamesByPlayer, allowedSpawnUnitNamesByPlayer, refineriesByTag);
+                    TrackUnitTypeChangeEvent(typeChangeEvent, playerContexts, buildAreaUnitOwnerIndexesByTag, builtUnitNamesByPlayer, canonicalSpawnUnitNamesByPlayer, refineriesByTag);
                 }
             }
 
             for (int i = 0; i < spawnCandidates.Count; i++)
             {
-                TrackSpawnUnit(spawnCandidates[i], allowedSpawnUnitNamesByPlayer, spawnUnitsByPlayer);
+                TrackSpawnUnit(spawnCandidates[i], playerContexts, canonicalSpawnUnitNamesByPlayer, spawnUnitsByPlayer);
             }
 
             index = nextIndex;
@@ -466,7 +470,7 @@ public static partial class Sc2DirectStrikeParser
         Polygon?[] stagingAreasByPlayer,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaUnitOwnerIndexesByTag,
         HashSet<string>?[] builtUnitNamesByPlayer,
-        HashSet<string>?[] allowedSpawnUnitNamesByPlayer,
+        HashSet<string>?[] canonicalSpawnUnitNamesByPlayer,
         List<SpawnCandidate> spawnCandidates)
     {
         if (unitBornEvent.Gameloop == 0
@@ -481,7 +485,7 @@ public static partial class Sc2DirectStrikeParser
         if (stagingAreasByPlayer[playerIndex] is { } stagingArea
             && stagingArea.Contains(position))
         {
-            AddBuiltUnitName(builtUnitNamesByPlayer, allowedSpawnUnitNamesByPlayer, playerIndex, unitBornEvent.UnitTypeName);
+            AddBuiltUnitName(builtUnitNamesByPlayer, canonicalSpawnUnitNamesByPlayer, playerIndex, player.Commander, unitBornEvent.UnitTypeName);
             buildAreaUnitOwnerIndexesByTag[(unitBornEvent.UnitTagIndex, unitBornEvent.UnitTagRecycle)] = playerIndex;
         }
 
@@ -493,9 +497,10 @@ public static partial class Sc2DirectStrikeParser
 
     private static void TrackUnitTypeChangeEvent(
         SUnitTypeChangeEvent typeChangeEvent,
+        DirectStrikePlayerContext[] playerContexts,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), int> buildAreaUnitOwnerIndexesByTag,
         HashSet<string>?[] builtUnitNamesByPlayer,
-        HashSet<string>?[] allowedSpawnUnitNamesByPlayer,
+        HashSet<string>?[] canonicalSpawnUnitNamesByPlayer,
         Dictionary<(int UnitTagIndex, int UnitTagRecycle), DirectStrikePlayerRefinery> refineriesByTag)
     {
         (int UnitTagIndex, int UnitTagRecycle) tag = (typeChangeEvent.UnitTagIndex, typeChangeEvent.UnitTagRecycle);
@@ -513,18 +518,26 @@ public static partial class Sc2DirectStrikeParser
             return;
         }
 
-        AddBuiltUnitName(builtUnitNamesByPlayer, allowedSpawnUnitNamesByPlayer, playerIndex, typeChangeEvent.UnitTypeName);
+        AddBuiltUnitName(
+            builtUnitNamesByPlayer,
+            canonicalSpawnUnitNamesByPlayer,
+            playerIndex,
+            playerContexts[playerIndex].Player.Commander,
+            typeChangeEvent.UnitTypeName);
     }
 
     private static void TrackSpawnUnit(
         SpawnCandidate spawnCandidate,
-        HashSet<string>?[] allowedSpawnUnitNamesByPlayer,
+        DirectStrikePlayerContext[] playerContexts,
+        HashSet<string>?[] canonicalSpawnUnitNamesByPlayer,
         List<TrackedSpawnUnit>?[] spawnUnitsByPlayer)
     {
         SUnitBornEvent unitBornEvent = spawnCandidate.Event;
         int playerIndex = spawnCandidate.PlayerIndex;
-        if (allowedSpawnUnitNamesByPlayer[playerIndex] is not { } allowedSpawnUnitNames
-            || !allowedSpawnUnitNames.Contains(unitBornEvent.UnitTypeName))
+        if (canonicalSpawnUnitNamesByPlayer[playerIndex] is not { } canonicalSpawnUnitNames
+            || !canonicalSpawnUnitNames
+                .GetAlternateLookup<ReadOnlySpan<char>>()
+                .Contains(GetCanonicalSpawnUnitName(unitBornEvent.UnitTypeName, playerContexts[playerIndex].Player.Commander)))
         {
             return;
         }
@@ -540,8 +553,9 @@ public static partial class Sc2DirectStrikeParser
 
     private static void AddBuiltUnitName(
         HashSet<string>?[] builtUnitNamesByPlayer,
-        HashSet<string>?[] allowedSpawnUnitNamesByPlayer,
+        HashSet<string>?[] canonicalSpawnUnitNamesByPlayer,
         int playerIndex,
+        Commander commander,
         string unitTypeName)
     {
         HashSet<string> builtUnitNames = GetBuiltUnitNames(builtUnitNamesByPlayer, playerIndex);
@@ -550,10 +564,9 @@ public static partial class Sc2DirectStrikeParser
             return;
         }
 
-        HashSet<string> allowedSpawnUnitNames = GetAllowedSpawnUnitNames(allowedSpawnUnitNamesByPlayer, playerIndex);
-        allowedSpawnUnitNames.Add(unitTypeName);
-        allowedSpawnUnitNames.Add(string.Concat(unitTypeName, "Lightweight"));
-        allowedSpawnUnitNames.Add(string.Concat(unitTypeName, "Starlight"));
+        HashSet<string> canonicalSpawnUnitNames = GetCanonicalSpawnUnitNames(canonicalSpawnUnitNamesByPlayer, playerIndex);
+        ReadOnlySpan<char> canonicalName = GetCanonicalSpawnUnitName(unitTypeName, commander);
+        canonicalSpawnUnitNames.Add(canonicalName.Length == unitTypeName.Length ? unitTypeName : canonicalName.ToString());
     }
 
     private static void SetPlayerStats(
@@ -719,15 +732,85 @@ public static partial class Sc2DirectStrikeParser
         return builtUnitNames;
     }
 
-    private static HashSet<string> GetAllowedSpawnUnitNames(HashSet<string>?[] allowedSpawnUnitNamesByPlayer, int playerIndex)
+    private static HashSet<string> GetCanonicalSpawnUnitNames(HashSet<string>?[] canonicalSpawnUnitNamesByPlayer, int playerIndex)
     {
-        if (allowedSpawnUnitNamesByPlayer[playerIndex] is not { } allowedSpawnUnitNames)
+        if (canonicalSpawnUnitNamesByPlayer[playerIndex] is not { } canonicalSpawnUnitNames)
         {
-            allowedSpawnUnitNames = new(StringComparer.Ordinal);
-            allowedSpawnUnitNamesByPlayer[playerIndex] = allowedSpawnUnitNames;
+            canonicalSpawnUnitNames = new(StringComparer.Ordinal);
+            canonicalSpawnUnitNamesByPlayer[playerIndex] = canonicalSpawnUnitNames;
         }
 
-        return allowedSpawnUnitNames;
+        return canonicalSpawnUnitNames;
+    }
+
+    private static ReadOnlySpan<char> GetCanonicalSpawnUnitName(string unitTypeName, Commander commander)
+    {
+        ReadOnlySpan<char> canonicalName = unitTypeName;
+        string? commanderAffix = GetCommanderUnitNameAffix(commander);
+        bool changed;
+        do
+        {
+            changed = false;
+            if (commanderAffix is not null && canonicalName.Length > commanderAffix.Length)
+            {
+                if (canonicalName.StartsWith(commanderAffix, StringComparison.Ordinal))
+                {
+                    canonicalName = canonicalName[commanderAffix.Length..];
+                    changed = true;
+                    continue;
+                }
+
+                if (canonicalName.EndsWith(commanderAffix, StringComparison.Ordinal))
+                {
+                    canonicalName = canonicalName[..^commanderAffix.Length];
+                    changed = true;
+                    continue;
+                }
+            }
+
+            changed = TryTrimUnitNameSuffix(ref canonicalName, "Lightweight")
+                || TryTrimUnitNameSuffix(ref canonicalName, "Starlight");
+        }
+        while (changed);
+
+        return canonicalName;
+    }
+
+    private static bool TryTrimUnitNameSuffix(ref ReadOnlySpan<char> unitName, ReadOnlySpan<char> suffix)
+    {
+        if (unitName.Length <= suffix.Length || !unitName.EndsWith(suffix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        unitName = unitName[..^suffix.Length];
+        return true;
+    }
+
+    private static string? GetCommanderUnitNameAffix(Commander commander)
+    {
+        return commander switch
+        {
+            Commander.Abathur => nameof(Commander.Abathur),
+            Commander.Alarak => nameof(Commander.Alarak),
+            Commander.Artanis => nameof(Commander.Artanis),
+            Commander.Dehaka => nameof(Commander.Dehaka),
+            Commander.Fenix => nameof(Commander.Fenix),
+            Commander.Horner => nameof(Commander.Horner),
+            Commander.Karax => nameof(Commander.Karax),
+            Commander.Kerrigan => nameof(Commander.Kerrigan),
+            Commander.Mengsk => nameof(Commander.Mengsk),
+            Commander.Nova => nameof(Commander.Nova),
+            Commander.Raynor => nameof(Commander.Raynor),
+            Commander.Stetmann => nameof(Commander.Stetmann),
+            Commander.Stukov => nameof(Commander.Stukov),
+            Commander.Swann => nameof(Commander.Swann),
+            Commander.Tychus => nameof(Commander.Tychus),
+            Commander.Vorazun => nameof(Commander.Vorazun),
+            Commander.Zagara => nameof(Commander.Zagara),
+            Commander.Zeratul => nameof(Commander.Zeratul),
+            _ => null,
+        };
     }
 
     private static List<TrackedSpawnUnit> GetSpawnUnits(List<TrackedSpawnUnit>?[] spawnUnitsByPlayer, int playerIndex)
