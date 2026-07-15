@@ -11,6 +11,7 @@ public static partial class Sc2DirectStrikeParser
     private const int SpawnGroupWindowGameloops = 112;
     private const string PlayerStateVictoryUpgrade = "PlayerStateVictory";
     private const string PlayerStateGameOverUpgrade = "PlayerStateGameOver";
+    private const string PlayerIsAfkUpgrade = "PlayerIsAFK";
 
     private static void SetTrackerData(Sc2Replay replay, DirectStrikePlayerContext[] playerContexts, DirectStrikeReplay directStrikeReplay)
     {
@@ -625,6 +626,7 @@ public static partial class Sc2DirectStrikeParser
     {
         List<int>?[] tierUpgradesByPlayer = new List<int>?[playerContexts.Length];
         Dictionary<string, int>?[] upgradesByPlayer = new Dictionary<string, int>?[playerContexts.Length];
+        int[]? afkGameloopsByPlayer = null;
         int? victoryTeam = null;
         bool hasInvalidVictoryTeam = false;
 
@@ -638,6 +640,18 @@ public static partial class Sc2DirectStrikeParser
 
             DirectStrikePlayer player = context.Context.Player;
             string upgradeName = upgradeEvent.UpgradeTypeName;
+            if (upgradeName == PlayerIsAfkUpgrade)
+            {
+                afkGameloopsByPlayer ??= new int[playerContexts.Length];
+                ref int afkGameloop = ref afkGameloopsByPlayer[context.Index];
+                if (afkGameloop == 0 || upgradeEvent.Gameloop < afkGameloop)
+                {
+                    afkGameloop = upgradeEvent.Gameloop;
+                }
+
+                continue;
+            }
+
             if (upgradeName is PlayerStateVictoryUpgrade or PlayerStateGameOverUpgrade)
             {
                 if (upgradeName == PlayerStateVictoryUpgrade)
@@ -682,6 +696,11 @@ public static partial class Sc2DirectStrikeParser
         for (int i = 0; i < playerContexts.Length; i++)
         {
             DirectStrikePlayer player = playerContexts[i].Player;
+            if (afkGameloopsByPlayer?[i] is > 0 and var afkGameloop)
+            {
+                SetAfkDuration(player, afkGameloop);
+            }
+
             if (tierUpgradesByPlayer[i] is { } tierUpgrades)
             {
                 tierUpgrades.Sort();
@@ -703,6 +722,19 @@ public static partial class Sc2DirectStrikeParser
                 }
 
                 player.Upgrades = new ReadOnlyDictionary<string, TimeSpan>(upgradeTimes);
+            }
+        }
+    }
+
+    private static void SetAfkDuration(DirectStrikePlayer player, int afkGameloop)
+    {
+        foreach (DirectStrikePlayerStats stats in player.Stats)
+        {
+            if (stats.Gameloop >= afkGameloop && stats.MineralsCollectionRate == 0)
+            {
+                player.DurationGameloop = stats.Gameloop;
+                player.Duration = stats.Time;
+                return;
             }
         }
     }
