@@ -12,6 +12,7 @@ public sealed partial class ParseTests
     [DataRow("testdata/Direct Strike (10096).SC2Replay")]
     [DataRow("testdata/Direct Strike (10124).SC2Replay")]
     [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike (600).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (999).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
@@ -54,6 +55,47 @@ public sealed partial class ParseTests
     }
 
     [TestMethod]
+    public async Task IncludesCanonicalEndscreenSpawnNamesAndExcludesUnitProducedEntities()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (600).SC2Replay");
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        DirectStrikeSpawnUnit[] odessaUnits = [.. dsReplay.Players
+            .Single(player => player.Name == "Odessa")
+            .Spawns.SelectMany(spawn => spawn.Units)];
+        Assert.HasCount(440, odessaUnits);
+        Assert.HasCount(28, odessaUnits.Where(unit => unit.Name == "SiegeTank"));
+
+        DirectStrikeSpawnUnit[] heronUnits = [.. dsReplay.Players
+            .Single(player => player.Name == "Heron")
+            .Spawns.SelectMany(spawn => spawn.Units)];
+        Assert.HasCount(385, heronUnits);
+        Assert.HasCount(108, heronUnits.Where(unit => unit.Name == "SwarmlingLightweight"));
+
+        Assert.IsFalse(dsReplay.Players
+            .SelectMany(player => player.Spawns)
+            .SelectMany(spawn => spawn.Units)
+            .Any(unit => unit.Name is "ReaverStarlightDummy" or "PurifierInterceptor" or "ClolarionBomber"));
+    }
+
+    [TestMethod]
+    public async Task IncludesCanonicalCommanderSuffixedSpawnUnitNames()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10147).SC2Replay");
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        int[] swannSiegeTankCounts = [.. dsReplay.Players
+            .Where(player => player.Commander == Commander.Swann)
+            .Select(player => player.Spawns
+                .SelectMany(spawn => spawn.Units)
+                .Count(unit => unit.Name == "SiegeTank"))
+            .Order()];
+        CollectionAssert.AreEqual(new[] { 23, 32 }, swannSiegeTankCounts);
+    }
+
+    [TestMethod]
     [DataRow("testdata/Direct Strike TE (999).SC2Replay")]
     public async Task CanExposePlayerBuildUnitNamesFromTrackerEvents(string replayName)
     {
@@ -91,6 +133,7 @@ public sealed partial class ParseTests
     [DataRow("testdata/Direct Strike (10096).SC2Replay")]
     [DataRow("testdata/Direct Strike (10124).SC2Replay")]
     [DataRow("testdata/Direct Strike (10143).SC2Replay")]
+    [DataRow("testdata/Direct Strike (600).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (999).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1910).SC2Replay")]
@@ -138,7 +181,7 @@ public sealed partial class ParseTests
             {
                 if (orderedTrackerEvents[i].BornEvent is { } bornEvent)
                 {
-                    VerifyExpectedSpawnUnit(bornEvent, playerIndexesByControlPlayerId, builtUnitNamesByPlayer, exposedSpawnUnits, verifiedSpawnUnits);
+                    VerifyExpectedSpawnUnit(bornEvent, playerIndexesByControlPlayerId, dsReplay.Players, builtUnitNamesByPlayer, exposedSpawnUnits, verifiedSpawnUnits);
                 }
             }
 
@@ -356,6 +399,7 @@ public sealed partial class ParseTests
     private static void VerifyExpectedSpawnUnit(
         SUnitBornEvent bornEvent,
         Dictionary<int, int> playerIndexesByControlPlayerId,
+        IReadOnlyList<DirectStrikePlayer> players,
         HashSet<string>[] builtUnitNamesByPlayer,
         HashSet<ExpectedSpawnUnit> exposedSpawnUnits,
         HashSet<ExpectedSpawnUnit> verifiedSpawnUnits)
@@ -379,8 +423,8 @@ public sealed partial class ParseTests
         if (exposedSpawnUnits.Contains(unit))
         {
             Assert.IsTrue(
-                ExpectedIsAllowedSpawnUnitName(builtUnitNamesByPlayer[playerIndex], bornEvent.UnitTypeName),
-                $"{bornEvent.UnitTypeName} must match a player build-area unit name directly or with an allowed suffix.");
+                ExpectedIsAllowedSpawnUnitName(builtUnitNamesByPlayer[playerIndex], bornEvent.UnitTypeName, players[playerIndex].Commander),
+                $"{bornEvent.UnitTypeName} must canonically match a player build-area unit name.");
             verifiedSpawnUnits.Add(unit);
         }
     }
@@ -451,11 +495,12 @@ public sealed partial class ParseTests
             && position.Y <= Math.Max(start.Y, end.Y);
     }
 
-    private static bool ExpectedIsAllowedSpawnUnitName(HashSet<string> builtUnitNames, string spawnUnitName)
+    private static bool ExpectedIsAllowedSpawnUnitName(HashSet<string> builtUnitNames, string spawnUnitName, Commander commander)
     {
+        string canonicalSpawnUnitName = GetExpectedCanonicalSpawnUnitName(spawnUnitName, commander);
         foreach (string builtUnitName in builtUnitNames)
         {
-            if (ExpectedIsAllowedSpawnUnitName(builtUnitName, spawnUnitName))
+            if (string.Equals(GetExpectedCanonicalSpawnUnitName(builtUnitName, commander), canonicalSpawnUnitName, StringComparison.Ordinal))
             {
                 return true;
             }
@@ -464,13 +509,49 @@ public sealed partial class ParseTests
         return false;
     }
 
-    private static bool ExpectedIsAllowedSpawnUnitName(string builtUnitName, string spawnUnitName)
+    private static string GetExpectedCanonicalSpawnUnitName(string unitTypeName, Commander commander)
     {
-        return string.Equals(spawnUnitName, builtUnitName, StringComparison.Ordinal)
-            || string.Equals(spawnUnitName, builtUnitName + "Lightweight", StringComparison.Ordinal)
-            || string.Equals(spawnUnitName, builtUnitName + "Starlight", StringComparison.Ordinal)
-            || string.Equals(spawnUnitName, builtUnitName + "MP", StringComparison.Ordinal)
-            || string.Equals(spawnUnitName, builtUnitName + "AP", StringComparison.Ordinal);
+        string canonicalName = unitTypeName;
+        string? commanderAffix = commander is Commander.None or Commander.Protoss or Commander.Terran or Commander.Zerg or Commander.Random
+            ? null
+            : commander.ToString();
+        bool changed;
+        do
+        {
+            changed = false;
+            if (commanderAffix is not null && canonicalName.Length > commanderAffix.Length)
+            {
+                if (canonicalName.StartsWith(commanderAffix, StringComparison.Ordinal))
+                {
+                    canonicalName = canonicalName[commanderAffix.Length..];
+                    changed = true;
+                    continue;
+                }
+
+                if (canonicalName.EndsWith(commanderAffix, StringComparison.Ordinal))
+                {
+                    canonicalName = canonicalName[..^commanderAffix.Length];
+                    changed = true;
+                    continue;
+                }
+            }
+
+            if (canonicalName.EndsWith("Lightweight", StringComparison.Ordinal)
+                && canonicalName.Length > "Lightweight".Length)
+            {
+                canonicalName = canonicalName[..^"Lightweight".Length];
+                changed = true;
+            }
+            else if (canonicalName.EndsWith("Starlight", StringComparison.Ordinal)
+                && canonicalName.Length > "Starlight".Length)
+            {
+                canonicalName = canonicalName[..^"Starlight".Length];
+                changed = true;
+            }
+        }
+        while (changed);
+
+        return canonicalName;
     }
 
     private readonly record struct ExpectedPos(int X, int Y);

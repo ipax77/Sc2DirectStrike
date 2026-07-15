@@ -26,6 +26,15 @@ ReplayDto dto = Sc2DirectStrikeParser.ParseDto(replay);
 
 `Parse` returns the Direct Strike domain model. `ParseDto` returns a compact DTO shape intended for downstream storage, comparison, or API output.
 
+## Changelog
+
+### 0.2.2 - 2026-07-15
+
+- Improved spawn-unit matching for commander-decorated and Starlight/Lightweight unit names while continuing to exclude produced units.
+- Added AFK duration handling based on the first zero-income stats event after the AFK signal.
+- Changed `Breakpoint.All` cumulative killed, lost, and upgrade values to use each player's final positive-income stats without changing compatibility hashes.
+- Added replay-backed regression coverage and end-screen validation fixtures for spawn counts and final player stats.
+
 ## Requirements
 
 - .NET SDK `10.0.203`
@@ -41,7 +50,7 @@ dotnet build src\src.slnx
 dotnet test src\Sc2DirectStrike.Tests\Sc2DirectStrike.Tests.csproj
 ```
 
-Current verified test baseline: `115` total, `111` passing, `4` skipped.
+Current verified test baseline: `131` total, `127` passing, `4` skipped.
 
 Stress replay tests are skipped by default. Run them explicitly with:
 
@@ -72,6 +81,6 @@ dotnet run -c Release --project src\Sc2DirectStrike.Benchmarks\Sc2DirectStrike.B
 
 - Target framework: `net10.0`
 - Language version: `latest`
-- Parser dependency: `s2protocol.NET` `0.9.2`
+- Parser dependency: `s2protocol.NET` `0.9.4`
 - Test framework: MSTest `4.0.2`
 - Benchmark framework: BenchmarkDotNet `0.15.8`

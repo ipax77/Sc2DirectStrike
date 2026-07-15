@@ -259,7 +259,9 @@ public static partial class Sc2DirectStrikeParser
             spawns.Add(CreateSpawnDto(breakpoint.Breakpoint, spawn, player, armyValuesBySpawn, incomesBySpawn));
         }
 
-        spawns.Add(CreateSpawnDto(Breakpoint.All, statsBackedSpawns[^1], player, armyValuesBySpawn, incomesBySpawn));
+        DirectStrikePlayerSpawn finalSpawn = statsBackedSpawns[^1];
+        DirectStrikePlayerStats? finalStats = GetFinalPositiveIncomeStats(player);
+        spawns.Add(CreateSpawnDto(Breakpoint.All, finalSpawn, player, armyValuesBySpawn, incomesBySpawn, finalStats));
         return spawns;
     }
 
@@ -304,6 +306,20 @@ public static partial class Sc2DirectStrikeParser
         }
 
         return statsBackedSpawns;
+    }
+
+    private static DirectStrikePlayerStats? GetFinalPositiveIncomeStats(DirectStrikePlayer player)
+    {
+        for (int i = player.Stats.Count - 1; i >= 0; i--)
+        {
+            DirectStrikePlayerStats stats = player.Stats[i];
+            if (stats.MineralsCollectionRate > 0)
+            {
+                return stats;
+            }
+        }
+
+        return null;
     }
 
     private static DirectStrikePlayerSpawn FindClosestBreakpointSpawn(List<DirectStrikePlayerSpawn> spawns, int targetGameloop)
@@ -353,10 +369,12 @@ public static partial class Sc2DirectStrikeParser
         DirectStrikePlayerSpawn spawn,
         DirectStrikePlayer player,
         IReadOnlyDictionary<DirectStrikePlayerSpawn, int> armyValuesBySpawn,
-        IReadOnlyDictionary<DirectStrikePlayerSpawn, int> incomesBySpawn)
+        IReadOnlyDictionary<DirectStrikePlayerSpawn, int> incomesBySpawn,
+        DirectStrikePlayerStats? cumulativeStats = null)
     {
         DirectStrikePlayerStats stats = spawn.SummaryStats
             ?? throw new InvalidOperationException("Breakpoint spawns must have summary stats.");
+        cumulativeStats ??= stats;
 
         return new()
         {
@@ -364,9 +382,9 @@ public static partial class Sc2DirectStrikeParser
             Income = incomesBySpawn.GetValueOrDefault(spawn),
             GasCount = GetGasCount(player, stats.Time),
             ArmyValue = armyValuesBySpawn.GetValueOrDefault(spawn),
-            KilledValue = stats.MineralsKilledArmy,
-            LostValue = stats.MineralsLostArmy,
-            UpgradeSpent = stats.MineralsUsedCurrentTechnology,
+            KilledValue = cumulativeStats.MineralsKilledArmy,
+            LostValue = cumulativeStats.MineralsLostArmy,
+            UpgradeSpent = cumulativeStats.MineralsUsedCurrentTechnology,
             Units = CreateUnitDtos(spawn),
         };
     }

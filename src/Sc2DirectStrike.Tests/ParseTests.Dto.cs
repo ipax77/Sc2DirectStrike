@@ -21,6 +21,28 @@ public sealed partial class ParseTests
 
     private static readonly int[] ExpectedDtoRefineryCosts = [150, 225, 300, 375, 500];
 
+    private static readonly ValidatedEndGameStats[] ValidatedEndGameStatsByPlayer =
+    [
+        new("testdata/Direct Strike (10813).SC2Replay", "Yakuza", 40_965, 40_875),
+        new("testdata/Direct Strike (10813).SC2Replay", "Splint", 39_590, 46_315),
+        new("testdata/Direct Strike (10813).SC2Replay", "sylEs", 49_670, 43_780),
+        new("testdata/Direct Strike (10813).SC2Replay", "Pharaoh", 31_760, 42_375),
+        new("testdata/Direct Strike (10813).SC2Replay", "PAX", 50_345, 46_250),
+        new("testdata/Direct Strike (10813).SC2Replay", "Serg", 35_970, 47_050),
+        new("testdata/Direct Strike (600).SC2Replay", "KotBegemot", 25_454, 26_920),
+        new("testdata/Direct Strike (600).SC2Replay", "Odessa", 31_556, 30_155),
+        new("testdata/Direct Strike (600).SC2Replay", "partner", 32_138, 30_325),
+        new("testdata/Direct Strike (600).SC2Replay", "KupilDivan", 23_100, 28_860),
+        new("testdata/Direct Strike (600).SC2Replay", "nobody", 31_030, 27_535),
+        new("testdata/Direct Strike (600).SC2Replay", "Heron", null, 34_311),
+        new("testdata/Direct Strike (10815).SC2Replay", "MUR", 78_720, 103_445),
+        new("testdata/Direct Strike (10815).SC2Replay", "Serenity", 103_600, 94_955),
+        new("testdata/Direct Strike (10815).SC2Replay", "Void", 130_145, 97_380),
+        new("testdata/Direct Strike (10815).SC2Replay", "ВертуалСопля", 89_185, 92_375),
+        new("testdata/Direct Strike (10815).SC2Replay", "chb", 102_445, 105_380),
+        new("testdata/Direct Strike (10815).SC2Replay", "PAX", 97_110, 115_310),
+    ];
+
     [TestMethod]
     [DataRow("testdata/Direct Strike (10060).SC2Replay")]
     [DataRow("testdata/Direct Strike TE (1904).SC2Replay")]
@@ -146,6 +168,9 @@ public sealed partial class ParseTests
                 DirectStrikePlayerSpawn expectedSpawn = expectedSpawns[j].Spawn;
                 DirectStrikePlayerStats expectedStats = expectedSpawn.SummaryStats
                     ?? throw new InvalidOperationException("Expected DTO spawn must have summary stats.");
+                DirectStrikePlayerStats expectedCumulativeStats = expectedSpawns[j].Breakpoint == Breakpoint.All
+                    ? GetExpectedFinalPositiveIncomeStats(expectedPlayer) ?? expectedStats
+                    : expectedStats;
                 SpawnDto actualSpawn = actualPlayer.Spawns.ElementAt(j);
 
                 Assert.AreEqual(GetExpectedDtoIncome(expectedPlayer, expectedStats.Gameloop), actualSpawn.Income);
@@ -154,12 +179,87 @@ public sealed partial class ParseTests
                     Math.Abs(actualSpawn.Income - GetExpectedDtoFormulaIncome(expectedPlayer, expectedStats.Gameloop, middleControl)));
                 Assert.AreEqual(expectedPlayer.RefineryTimes.Count(refinery => refinery <= expectedStats.Time), actualSpawn.GasCount);
                 Assert.AreEqual(expectedArmyValues[expectedSpawn], actualSpawn.ArmyValue);
-                Assert.AreEqual(expectedStats.MineralsKilledArmy, actualSpawn.KilledValue);
-                Assert.AreEqual(expectedStats.MineralsLostArmy, actualSpawn.LostValue);
-                Assert.AreEqual(expectedStats.MineralsUsedCurrentTechnology, actualSpawn.UpgradeSpent);
+                Assert.AreEqual(expectedCumulativeStats.MineralsKilledArmy, actualSpawn.KilledValue);
+                Assert.AreEqual(expectedCumulativeStats.MineralsLostArmy, actualSpawn.LostValue);
+                Assert.AreEqual(expectedCumulativeStats.MineralsUsedCurrentTechnology, actualSpawn.UpgradeSpent);
                 AssertUnitDtosAreEquivalent(expectedSpawn, actualSpawn);
             }
         }
+    }
+
+    [TestMethod]
+    [DataRow("testdata/Direct Strike (10813).SC2Replay")]
+    [DataRow("testdata/Direct Strike (600).SC2Replay")]
+    [DataRow("testdata/Direct Strike (10815).SC2Replay")]
+    public async Task ReplayDtoAllSpawnMatchesValidatedEndGameStats(string replayName)
+    {
+        Sc2Replay replay = await GetReplay(replayName);
+        DirectStrikeReplay parsedReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        ReplayDto dto = Sc2DirectStrikeParser.ParseDto(replay, parsedReplay);
+        bool exercisesFinalStatsOverride = false;
+
+        foreach (ValidatedEndGameStats expected in ValidatedEndGameStatsByPlayer.Where(expected => expected.ReplayName == replayName))
+        {
+            DirectStrikePlayer parsedPlayer = parsedReplay.Players.Single(player => player.Name == expected.PlayerName);
+            DirectStrikePlayerStats finalStats = GetExpectedFinalPositiveIncomeStats(parsedPlayer)
+                ?? throw new InvalidOperationException($"Expected positive-income stats for '{expected.PlayerName}'.");
+            DirectStrikePlayerSpawn finalSpawn = parsedPlayer.Spawns.Last(spawn => spawn.SummaryStats is { MineralsCollectionRate: > 0 });
+            DirectStrikePlayerStats spawnStats = finalSpawn.SummaryStats
+                ?? throw new InvalidOperationException($"Expected final spawn stats for '{expected.PlayerName}'.");
+            SpawnDto allSpawn = dto.Players
+                .Single(player => player.Name == expected.PlayerName)
+                .Spawns
+                .Single(spawn => spawn.Breakpoint == Breakpoint.All);
+
+            Assert.AreEqual(GetExpectedDtoIncome(parsedPlayer, spawnStats.Gameloop), allSpawn.Income, $"Unexpected final income for '{expected.PlayerName}'.");
+            Assert.AreEqual(parsedPlayer.RefineryTimes.Count(refinery => refinery <= spawnStats.Time), allSpawn.GasCount, $"Unexpected final gas count for '{expected.PlayerName}'.");
+            Assert.AreEqual(GetExpectedDtoArmyValues(parsedPlayer)[finalSpawn], allSpawn.ArmyValue, $"Unexpected final army value for '{expected.PlayerName}'.");
+            AssertUnitDtosAreEquivalent(finalSpawn, allSpawn);
+
+            if (expected.MineralsKilledArmy is { } expectedKilledValue)
+            {
+                Assert.AreEqual(expectedKilledValue, allSpawn.KilledValue, $"Unexpected validated killed value for '{expected.PlayerName}'.");
+            }
+
+            Assert.AreEqual(expected.MineralsLostArmy, allSpawn.LostValue, $"Unexpected validated lost value for '{expected.PlayerName}'.");
+            Assert.AreEqual(finalStats.MineralsKilledArmy, allSpawn.KilledValue, $"Unexpected final killed value for '{expected.PlayerName}'.");
+            Assert.AreEqual(finalStats.MineralsLostArmy, allSpawn.LostValue, $"Unexpected final lost value for '{expected.PlayerName}'.");
+            Assert.AreEqual(finalStats.MineralsUsedCurrentTechnology, allSpawn.UpgradeSpent, $"Unexpected final upgrade value for '{expected.PlayerName}'.");
+
+            exercisesFinalStatsOverride |= finalStats.MineralsKilledArmy != spawnStats.MineralsKilledArmy
+                || finalStats.MineralsLostArmy != spawnStats.MineralsLostArmy
+                || finalStats.MineralsUsedCurrentTechnology != spawnStats.MineralsUsedCurrentTechnology;
+        }
+
+        Assert.IsTrue(exercisesFinalStatsOverride, $"Expected '{replayName}' to exercise the final stats override.");
+    }
+
+    [TestMethod]
+    public async Task ReplayDtoCompatHashDoesNotUseAllSpawnCumulativeStats()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10813).SC2Replay");
+        DirectStrikeReplay parsedReplay = Sc2DirectStrikeParser.Parse(replay);
+        DirectStrikePlayer parsedPlayer = parsedReplay.Players.Single(player => player.Name == "PAX");
+        DirectStrikePlayerStats finalStats = GetExpectedFinalPositiveIncomeStats(parsedPlayer)
+            ?? throw new InvalidOperationException("Expected positive-income stats for PAX.");
+
+        ReplayDto original = Sc2DirectStrikeParser.ParseDto(replay, parsedReplay);
+        finalStats.MineralsKilledArmy++;
+        finalStats.MineralsLostArmy++;
+        finalStats.MineralsUsedCurrentTechnology++;
+        ReplayDto modified = Sc2DirectStrikeParser.ParseDto(replay, parsedReplay);
+
+        ReplayPlayerDto originalPlayer = original.Players.Single(player => player.Name == parsedPlayer.Name);
+        ReplayPlayerDto modifiedPlayer = modified.Players.Single(player => player.Name == parsedPlayer.Name);
+        SpawnDto originalAllSpawn = originalPlayer.Spawns.Single(spawn => spawn.Breakpoint == Breakpoint.All);
+        SpawnDto modifiedAllSpawn = modifiedPlayer.Spawns.Single(spawn => spawn.Breakpoint == Breakpoint.All);
+
+        Assert.AreEqual(original.CompatHash, modified.CompatHash);
+        Assert.AreEqual(originalPlayer.CompatHash, modifiedPlayer.CompatHash);
+        Assert.AreEqual(originalAllSpawn.KilledValue + 1, modifiedAllSpawn.KilledValue);
+        Assert.AreEqual(originalAllSpawn.LostValue + 1, modifiedAllSpawn.LostValue);
+        Assert.AreEqual(originalAllSpawn.UpgradeSpent + 1, modifiedAllSpawn.UpgradeSpent);
     }
 
     [TestMethod]
@@ -318,6 +418,20 @@ public sealed partial class ParseTests
         }
 
         yield return new(Breakpoint.All, statsBackedSpawns[^1]);
+    }
+
+    private static DirectStrikePlayerStats? GetExpectedFinalPositiveIncomeStats(DirectStrikePlayer player)
+    {
+        for (int i = player.Stats.Count - 1; i >= 0; i--)
+        {
+            DirectStrikePlayerStats stats = player.Stats[i];
+            if (stats.MineralsCollectionRate > 0)
+            {
+                return stats;
+            }
+        }
+
+        return null;
     }
 
     private static Dictionary<DirectStrikePlayerSpawn, int> GetExpectedDtoArmyValues(DirectStrikePlayer player)
@@ -542,4 +656,10 @@ public sealed partial class ParseTests
     }
 
     private readonly record struct ExpectedDtoBreakpointSpawn(Breakpoint Breakpoint, DirectStrikePlayerSpawn Spawn);
+
+    private readonly record struct ValidatedEndGameStats(
+        string ReplayName,
+        string PlayerName,
+        int? MineralsKilledArmy,
+        int MineralsLostArmy);
 }

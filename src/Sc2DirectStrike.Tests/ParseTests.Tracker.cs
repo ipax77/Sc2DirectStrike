@@ -181,6 +181,7 @@ public sealed partial class ParseTests
         DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
 
         ExpectedPlayerStats[][] expectedStats = GetExpectedPlayerStats(replay, dsReplay);
+        int[] expectedDurationGameloops = GetExpectedPlayerDurationGameloops(replay, dsReplay, expectedStats);
         Assert.IsTrue(dsReplay.Players.Any(player => player.Stats.Count > 0));
         for (int i = 0; i < dsReplay.Players.Count; i++)
         {
@@ -188,11 +189,7 @@ public sealed partial class ParseTests
             Assert.IsTrue(player.Stats.Select(stats => stats.Gameloop).SequenceEqual(player.Stats.Select(stats => stats.Gameloop).Order()));
             Assert.HasCount(expectedStats[i].Length, player.Stats, $"Unexpected stats count for player index {i}.");
 
-            int expectedDurationGameloop = expectedStats[i]
-                .Where(stats => stats.MineralsCollectionRate > 0)
-                .Select(stats => stats.Gameloop)
-                .DefaultIfEmpty()
-                .Max();
+            int expectedDurationGameloop = expectedDurationGameloops[i];
             Assert.AreEqual(expectedDurationGameloop, player.DurationGameloop);
             Assert.AreEqual(TimeSpan.FromSeconds(expectedDurationGameloop / 22.4D), player.Duration);
 
@@ -227,6 +224,32 @@ public sealed partial class ParseTests
         Assert.AreEqual(5_484, gamePos5.DurationGameloop);
         Assert.AreEqual(TimeSpan.FromSeconds(5_484 / 22.4D), gamePos5.Duration);
         Assert.IsLessThan(6_720, gamePos5.DurationGameloop);
+    }
+
+    [TestMethod]
+    public async Task CanSetAfkPlayerDurationAtFirstZeroIncomeStats()
+    {
+        Sc2Replay replay = await GetReplay("testdata/Direct Strike (10777).SC2Replay");
+        Assert.IsNotNull(replay.TrackerEvents);
+        SUpgradeEvent afkEvent = replay.TrackerEvents.SUpgradeEvents.Single(upgradeEvent =>
+            upgradeEvent.PlayerId == 6
+            && string.Equals(upgradeEvent.UpgradeTypeName, "PlayerIsAFK", StringComparison.Ordinal));
+
+        DirectStrikeReplay dsReplay = Sc2DirectStrikeParser.Parse(replay);
+
+        DirectStrikePlayer afkPlayer = dsReplay.Players.Single(player => player.GamePos == 6);
+        DirectStrikePlayerStats firstZeroIncomeStats = afkPlayer.Stats.First(stats =>
+            stats.Gameloop >= afkEvent.Gameloop
+            && stats.MineralsCollectionRate == 0);
+        Assert.AreEqual(4_368, afkEvent.Gameloop);
+        Assert.AreEqual(4_640, firstZeroIncomeStats.Gameloop);
+        Assert.AreEqual(firstZeroIncomeStats.Gameloop, afkPlayer.DurationGameloop);
+        Assert.AreEqual(firstZeroIncomeStats.Time, afkPlayer.Duration);
+        Assert.IsTrue(afkPlayer.Stats
+            .Where(stats => stats.Gameloop >= afkPlayer.DurationGameloop)
+            .All(stats => stats.MineralsCollectionRate == 0));
+        Assert.IsTrue(afkPlayer.Stats.Any(stats => stats.Gameloop > afkPlayer.DurationGameloop));
+        Assert.IsEmpty(afkPlayer.Spawns);
     }
 
     private static TimeSpan GetObjectiveDeathTime(Sc2Replay replay, string unitTypeName)
@@ -397,6 +420,54 @@ public sealed partial class ParseTests
         }
 
         return [.. statsByPlayer.Select(stats => stats.OrderBy(stat => stat.Gameloop).ToArray())];
+    }
+
+    private static int[] GetExpectedPlayerDurationGameloops(
+        Sc2Replay replay,
+        DirectStrikeReplay dsReplay,
+        ExpectedPlayerStats[][] expectedStats)
+    {
+        int[] durationGameloops = new int[expectedStats.Length];
+        for (int i = 0; i < expectedStats.Length; i++)
+        {
+            durationGameloops[i] = expectedStats[i]
+                .Where(stats => stats.MineralsCollectionRate > 0)
+                .Select(stats => stats.Gameloop)
+                .DefaultIfEmpty()
+                .Max();
+        }
+
+        Dictionary<int, int> playerIndexesByControlPlayerId = GetPlayerIndexesByControlPlayerId(replay, dsReplay);
+        int[] afkGameloops = new int[expectedStats.Length];
+        foreach (SUpgradeEvent upgradeEvent in replay.TrackerEvents?.SUpgradeEvents ?? [])
+        {
+            if (!string.Equals(upgradeEvent.UpgradeTypeName, "PlayerIsAFK", StringComparison.Ordinal)
+                || !playerIndexesByControlPlayerId.TryGetValue(upgradeEvent.PlayerId, out int playerIndex))
+            {
+                continue;
+            }
+
+            if (afkGameloops[playerIndex] == 0 || upgradeEvent.Gameloop < afkGameloops[playerIndex])
+            {
+                afkGameloops[playerIndex] = upgradeEvent.Gameloop;
+            }
+        }
+
+        for (int i = 0; i < expectedStats.Length; i++)
+        {
+            foreach (ExpectedPlayerStats stats in expectedStats[i])
+            {
+                if (afkGameloops[i] > 0
+                    && stats.Gameloop >= afkGameloops[i]
+                    && stats.MineralsCollectionRate == 0)
+                {
+                    durationGameloops[i] = stats.Gameloop;
+                    break;
+                }
+            }
+        }
+
+        return durationGameloops;
     }
 
     private static int GetExpectedWinnerTeam(
